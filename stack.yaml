@@ -1,0 +1,65 @@
+version: 1.0
+provider:
+  name: openfaas
+  gateway: http://127.0.0.1:8080
+  # gateway: $OPENFAAS_GATEWAY
+functions:
+  task-generator:
+    lang: python3-http
+    handler: ./task-generator
+    image: lilanpei/task-generator:latest
+    # image: $USERID/$IMAGE_NAME:$TAG
+    environment:
+      redis_hostname: "redis-master.redis.svc.cluster.local"
+      redis_port: 6379
+    annotations: # ESSENTIAL for a long-running worker
+      exec_timeout: "0"  # Infinite timeout
+      read_timeout: "0"
+      write_timeout: "0"
+      prometheus.io.scrape: True
+      prometheus.io.port: "8080"
+
+  worker:
+    lang: python3-http
+    handler: ./worker
+    image: lilanpei/worker:latest
+    # image: $USERID/$IMAGE_NAME:$TAG
+    environment:
+      redis_hostname: "redis-master.redis.svc.cluster.local"
+      redis_port: 6379
+      TASK_QUEUE_NAME: task_queue
+      RESULTS_QUEUE_NAME: results_queue
+    annotations: # ESSENTIAL for a long-running worker
+      exec_timeout: "0"  # Infinite timeout
+      read_timeout: "0"
+      write_timeout: "0"
+      prometheus.io.scrape: True
+      prometheus.io.port: "8080"
+    limits:
+      memory: 256Mi
+      cpu: 150m
+    requests:
+      memory: 256Mi
+      cpu: 150m
+
+  collector:
+    lang: python3-http
+    handler: ./collector
+    image: lilanpei/collector:latest
+    # image: $USERID/$IMAGE_NAME:$TAG
+    environment:
+      redis_hostname: "redis-master.redis.svc.cluster.local"
+      redis_port: 6379
+      RESULTS_QUEUE_NAME: results_queue
+      COMPLETED_RESULTS_SET_NAME: completed_tasks_results
+    annotations: 
+      exec_timeout: "0"  # Infinite timeout
+      read_timeout: "0"
+      write_timeout: "0"
+      prometheus.io.scrape: True
+      prometheus.io.port: "8080"
+
+configuration:
+  templates:
+    - name: python3-http
+      source: https://github.com/openfaas/python3-http-template

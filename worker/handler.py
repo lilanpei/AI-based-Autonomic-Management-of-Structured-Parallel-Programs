@@ -1,12 +1,9 @@
 import os
 import json
 import time
-import uuid
 import redis
-import requests
 import random
 import numpy as np
-from time import time, sleep
 
 redisClient = None
 
@@ -14,13 +11,10 @@ def initRedis():
     redisHostname = os.getenv('redis_hostname', default='redis-master.redis.svc.cluster.local')
     redisPort = os.getenv('redis_port')
 
-    with open('/var/openfaas/secrets/redis-password', 'r') as s:
-        redisPassword = s.read()
-
     return redis.Redis(
         host=redisHostname,
         port=redisPort,
-        password=redisPassword,
+        decode_responses=True
     )
 
 # basic numpy matrix multiplication
@@ -28,56 +22,65 @@ def matmul(n):
     A = np.random.rand(n, n)
     B = np.random.rand(n, n)
 
-    start = time()
+    start = time.time()
     C = np.matmul(A, B)
-    latency = time() - start
+    latency = time.time() - start
     return latency
 
-# openfaas event handler function
 def handle(event, context):
-    print(f"!!!!!!!!!!!!! Event: {event} !!!!!!!!!!!!!")
+    print(f"!!!!!!!!!!!!! Worker function invoked !!!!!!!!!!!!!")
     global redisClient
 
     if redisClient == None:
         redisClient = initRedis()
 
+    task_queue_key = os.getenv('TASK_QUEUE_NAME', 'task_queue')
+    results_queue_key = os.getenv('RESULTS_QUEUE_NAME', 'results_queue')
+
     while True:
-        # Process tasks until queue is empty
-        task_json = redisClient.rpop("task_queue")  # Non-blocking pop
-    
-        if not task_json:
-            # If queue is empty, sleep for a while before checking again
-            print("Queue is empty, waiting for tasks...")
-            # sleep(1)  # Sleep for 1 second before checking again
-            # requests.post('http://127.0.0.1:8080/function/woker')
-            break  # Exit when queue is empty
-            
+        task = None
         try:
+            # BLPOP to block until a task is available from the task queue (blocking call)
+            queue_name, task_json = redisClient.blpop(task_queue_key, timeout=0)
+
+            if not task_json:
+                time.sleep(0.1)
+                continue
+
             task = json.loads(task_json)
-            # Process task here
-            print(f"Processing task: {task['id']} : {task['size']}")
-            size = task['size']
-            # input = [10, 100, 1000]
-            # n = random.randint(0, 2)
-            # result = matmul(input[n])
-            result = matmul(size)
-            print(f"Task {task['id']} completed with result: {result}")
-        
-        # If there are remaining tasks, send a request to the matmul function itself to process the next task
-        # Check remaining tasks in the queue
-        # remainingWork = redisClient.llen("task_queue")
-        # print(f"Remaining tasks in queue: {remainingWork}")
-        # if remainingWork > 0:
-        #     requests.post('http://127.0.0.1:8080/function/woker')
 
+            task_id = int(task['id'])
+            task_size = task['size']
+
+            print(f"Worker processing task: {task_id} : {task_size}")
+
+            result_latency = matmul(task_size)
+            completion_time = time.time()
+
+            print(f"Task {task_id} completed with result (latency): {result_latency:.4f}s")
+
+            result_data = {
+                "task_id": task_id,
+                "original_task_size": task_size,
+                "latency_seconds": result_latency,
+                "completion_timestamp": completion_time,
+                "worker_pod": os.getenv("HOSTNAME", "unknown")
+            }
+
+            # --- Push the result to the results queue (blocking call) ---
+            redisClient.lpush(results_queue_key, json.dumps(result_data))
+            print(f"Pushed result for task {task_id} to '{results_queue_key}'.")
+
+        except json.JSONDecodeError as e:
+            print(f"Error decoding task JSON from queue: {task_json} - {str(e)}")
+        except redis.exceptions.ConnectionError as e:
+            print(f"Redis connection error: {str(e)}. Attempting to reinitialize.")
+            redisClient = initRedis() # Reinitialize blocking client
         except Exception as e:
-            print(f"Error processing task: {str(e)}")
+            print(f"An unhandled error occurred in worker for task {task.get('id', 'N/A')}: {str(e)}")
+            time.sleep(1)
 
-    # If we reach here, it means the break condition was met
-    # After processing all tasks, check if the queue is empty
-    print("All tasks processed. Queue is empty.")
-    # Return a response indicating completion
     return {
-        "status": "Completed",
-        "message": "All tasks processed. Queue is empty."
+        "statusCode": 200, 
+        "body": "Worker function is continuously processing tasks."
     }
