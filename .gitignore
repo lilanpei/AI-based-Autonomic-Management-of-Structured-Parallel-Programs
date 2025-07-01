@@ -1,3 +1,4 @@
 .DS_Store
 openfaas-functions/build/
 openfaas-functions/template/
+orchestrator/__pycache__/

@@ -1,0 +1,89 @@
+import os
+import sys
+import yaml
+import json
+import redis
+import numpy as np
+
+_config = None # Private variable to hold loaded configuration
+
+def get_config():
+    """Loads configuration from configuration.yml."""
+    global _config
+    if _config is None:
+        try:
+            # Assuming configuration.yml is in the same directory as utilities.py
+            script_dir = os.path.dirname(__file__)
+            config_path = os.path.join(script_dir, 'configuration.yml')
+            with open(config_path, 'r') as f:
+                _config = yaml.safe_load(f)
+            print("Configuration loaded successfully from configuration.yml")
+        except FileNotFoundError:
+            print(f"ERROR: configuration.yml not found at {config_path}. Please ensure it's in the same directory as utilities.py.", file=sys.stderr)
+            sys.exit(1)
+        except yaml.YAMLError as e:
+            print(f"ERROR: Error parsing configuration.yml: {e}", file=sys.stderr)
+            sys.exit(1)
+    return _config
+
+
+def init_redis_client():
+    """
+    Initializes and returns a synchronous Redis client using configuration.
+    It reads hostname and port from environment variables (REDIS_HOSTNAME, REDIS_PORT)
+    or falls back to configuration.yml settings. Exits if connection fails.
+    """
+    config = get_config()
+    redis_settings = config.get('redis', {}) # Get the 'redis' section from config.yml
+    
+    # Get hostname, prioritizing REDIS_HOSTNAME env var, then config's hostname, then default 'localhost'
+    redis_hostname = os.getenv('REDIS_HOSTNAME', redis_settings.get('hostname', 'localhost'))
+    
+    # Get port, prioritizing REDIS_PORT env var, then config's port, then default 6379.
+    # Convert port from config to string for os.getenv default, then to int for redis.Redis.
+    redis_port = int(os.getenv('REDIS_PORT', str(redis_settings.get('port', 6379))))
+
+    return redis.Redis(
+        host=redis_hostname,
+        port=redis_port,
+        decode_responses=True
+    )
+
+def generate_matrix(size):
+    """
+    Generates a square matrix of given size with random float values.
+    Returns the matrix as a nested Python list (suitable for JSON serialization).
+    """
+    return np.random.rand(size, size).tolist()
+
+def clear_queues(self, redis_client, queue_names=None):
+    """Clears specified Redis queues and the results set."""
+    config = get_config()
+
+    if queue_names is None:
+        # Clear all relevant queues if no specific names are given
+        queue_names = [
+            config["input_queue_name"],
+            config["worker_queue_name"],
+            config["output_queue_name"]
+        ]
+
+    if redis_client is None:
+        try:
+            redis_client = init_redis_client()
+            for q_name in queue_names:
+                count = redis_client.delete(q_name)
+                print(f"Cleared Redis Queue '{q_name}'. Removed {count} items.")
+            print("All specified queues and sets cleared.")
+        except redis.exceptions.ConnectionError as e:
+            print(f"Redis connection error: {str(e)}. Attempting to reinitialize.")
+            time.sleep(5)
+            try:
+                redis_client = init_redis_client() # Reinitialize blocking client
+                for q_name in queue_names:
+                    count = redis_client.delete(q_name)
+                    print(f"Cleared Redis Queue '{q_name}'. Removed {count} items.")
+                print("All specified queues and sets cleared.")
+            except Exception as init_e:
+                print(f"CRITICAL ERROR: Redis reinit failed: {init_e}", file=sys.stderr)
+                return {"statusCode": 500, "body": f"Redis failure: {init_e}"}

@@ -4,10 +4,25 @@ provider:
   gateway: http://127.0.0.1:8080
   # gateway: $OPENFAAS_GATEWAY
 functions:
-  task-generator:
+  # task-generator:
+  #   lang: python3-http
+  #   handler: ./task-generator
+  #   image: lilanpei/task-generator:latest
+  #   # image: $USERID/$IMAGE_NAME:$TAG
+  #   environment:
+  #     redis_hostname: "redis-master.redis.svc.cluster.local"
+  #     redis_port: 6379
+  #   annotations: # ESSENTIAL for a long-running worker
+  #     exec_timeout: "0"  # Infinite timeout
+  #     read_timeout: "0"
+  #     write_timeout: "0"
+  #     prometheus.io.scrape: True
+  #     prometheus.io.port: "8080"
+
+  emitter:
     lang: python3-http
-    handler: ./task-generator
-    image: lilanpei/task-generator:latest
+    handler: ./emitter
+    image: lilanpei/emitter:latest
     # image: $USERID/$IMAGE_NAME:$TAG
     environment:
       redis_hostname: "redis-master.redis.svc.cluster.local"

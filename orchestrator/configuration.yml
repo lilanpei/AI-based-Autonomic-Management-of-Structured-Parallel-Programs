@@ -1,0 +1,5 @@
+redis_hostname: redis_hostname
+redis_port: redis_port
+input_queue_name: input_queue
+worker_queue_name: worker_queue
+output_queue_name: output_queue
