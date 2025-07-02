@@ -1,86 +1,159 @@
 import os
+import sys
 import json
 import time
 import redis
-import random
+import requests
 import numpy as np
 
 redisClient = None
 
-def initRedis():
-    redisHostname = os.getenv('redis_hostname', default='redis-master.redis.svc.cluster.local')
-    redisPort = os.getenv('redis_port')
-
+def init_redis_client():
+    redis_hostname = os.getenv('redis_hostname', default='redis-master.redis.svc.cluster.local')
+    redis_port = os.getenv('redis_port')
     return redis.Redis(
-        host=redisHostname,
-        port=redisPort,
+        host=redis_hostname,
+        port=redis_port,
         decode_responses=True
     )
 
-# basic numpy matrix multiplication
-def matmul(n):
-    A = np.random.rand(n, n)
-    B = np.random.rand(n, n)
-
-    start = time.time()
-    C = np.matmul(A, B)
-    latency = time.time() - start
-    return latency
-
 def handle(event, context):
-    print(f"!!!!!!!!!!!!! Worker function invoked !!!!!!!!!!!!!")
+    print("!!!!!!!!!!!!! Worker function invoked !!!!!!!!!!!!!")
     global redisClient
 
-    if redisClient == None:
-        redisClient = initRedis()
+    if redisClient is None:
+        try:
+            redisClient = init_redis_client()
+        except redis.exceptions.ConnectionError as e:
+            print(f"Redis init error: {str(e)}. Retrying...")
+            time.sleep(5)
+            try:
+                redisClient = init_redis_client()
+            except Exception as e:
+                print(f"CRITICAL ERROR: Redis reinit failed: {e}", file=sys.stderr)
+                return {"statusCode": 500, "body": f"Redis failure: {e}"}
 
-    task_queue_key = os.getenv('TASK_QUEUE_NAME', 'task_queue')
-    results_queue_key = os.getenv('RESULTS_QUEUE_NAME', 'results_queue')
+    # Parse request body
+    try:
+        request_body = json.loads(event.body)
+        start_flag = request_body.get('start_flag')
+        worker_q_name = request_body.get('worker_queue_name')
+        result_q_name = request_body.get('result_queue_name')
+    except (json.JSONDecodeError, TypeError):
+        return {"statusCode": 400, "body": "Invalid or missing JSON in request body."}
+
+    if not worker_q_name or not result_q_name or start_flag is None:
+        return {"statusCode": 400, "body": "Missing 'start_flag', 'worker_queue_name', or 'result_queue_name'."}
+
+    if not start_flag:
+        print("[INFO] start_flag is False. Worker will not run.")
+        return {"statusCode": 200, "body": "Worker exited as instructed (start_flag is False)."}
+
+    tasks_processed = 0
 
     while True:
-        task = None
         try:
-            # BLPOP to block until a task is available from the task queue (blocking call)
-            queue_name, task_json = redisClient.blpop(task_queue_key, timeout=0)
+            try:
+                pop_start = time.time()
+                raw_task = redisClient.lpop(worker_q_name)
+                pop_time = time.time() - pop_start
+                print(f"[INFO] lpop from '{worker_q_name}' took {pop_time} seconds.")
+            except redis.exceptions.ConnectionError as e:
+                print(f"Redis lpop error: {str(e)}. Retrying...")
+                time.sleep(5)
+                try:
+                    redisClient = init_redis_client()
+                    retry_pop_start = time.time()
+                    raw_task = redisClient.lpop(worker_q_name)
+                    retry_pop_time = time.time() - retry_pop_start
+                    print(f"[INFO] Recovered: lpop from '{worker_q_name}' took {retry_pop_time} seconds.")
+                except Exception as e:
+                    return {"statusCode": 500, "body": f"Redis failure: {e}"}
 
-            if not task_json:
-                time.sleep(0.1)
+            if raw_task is None:
+                print(f"[INFO] No tasks in queue '{worker_q_name}'. Reinvoking self...")
+                time.sleep(10)
+
+                payload = {
+                    "start_flag": True,
+                    "worker_queue_name": worker_q_name,
+                    "result_queue_name": result_q_name
+                }
+
+                try:
+                    response = requests.post(
+                        "http://127.0.0.1:8080/function/worker",
+                        data=json.dumps(payload),
+                        headers={"Content-Type": "application/json"}
+                    )
+                    print(f"[INFO] Reinvoked worker - Status: {response.status_code}")
+                    print("Response Body:", response.text)
+                except requests.exceptions.RequestException as e:
+                    print(f"ERROR: Self-reinvoke failed: {e}", file=sys.stderr)
+
+                break  # Exit current loop after reinvoking
+
+            try:
+                task = json.loads(raw_task)
+                task_id = task.get("id")
+                task_data = task.get("data")
+                task_application = task.get("task_application")
+
+                if task_application != "matrix_multiplication":
+                    raise ValueError(f"Unsupported task_application: {task_application}")
+
+                if not task_data or not isinstance(task_data, dict):
+                    raise ValueError("Invalid task_data format.")
+
+                matrix_a = np.array(task_data.get("matrix_a"))
+                matrix_b = np.array(task_data.get("matrix_b"))
+
+                if matrix_a.shape[1] != matrix_b.shape[0]:
+                    raise ValueError("Matrix dimensions incompatible for multiplication.")
+
+            except Exception as e:
+                print(f"Task parsing or validation failed: {e}", file=sys.stderr)
                 continue
 
-            task = json.loads(task_json)
+            start_time = time.time()
+            result_matrix = np.dot(matrix_a, matrix_b)
+            end_time = time.time()
 
-            task_id = int(task['id'])
-            task_size = task['size']
-
-            print(f"Worker processing task: {task_id} : {task_size}")
-
-            result_latency = matmul(task_size)
-            completion_time = time.time()
-
-            print(f"Task {task_id} completed with result (latency): {result_latency:.4f}s")
-
-            result_data = {
+            structured_result = {
                 "task_id": task_id,
-                "original_task_size": task_size,
-                "latency_seconds": result_latency,
-                "completion_timestamp": completion_time,
-                "worker_pod": os.getenv("HOSTNAME", "unknown")
+                "result_data": result_matrix.tolist(),
+                "output_size": result_matrix.size,
+                "complete_time": end_time - start_time,
+                "timestamp": end_time
             }
 
-            # --- Push the result to the results queue (blocking call) ---
-            redisClient.lpush(results_queue_key, json.dumps(result_data))
-            print(f"Pushed result for task {task_id} to '{results_queue_key}'.")
+            try:
+                push_start = time.time()
+                redisClient.lpush(result_q_name, json.dumps(structured_result))
+                push_time = time.time() - push_start
+                print(f"[INFO] lpush to '{result_q_name}' took {push_time} seconds.")
+            except redis.exceptions.ConnectionError as e:
+                print(f"Redis lpush error: {str(e)}. Retrying...")
+                time.sleep(5)
+                try:
+                    redisClient = init_redis_client()
+                    retry_push_start = time.time()
+                    redisClient.lpush(result_q_name, json.dumps(structured_result))
+                    retry_push_time = time.time() - retry_push_start
+                    print(f"[INFO] Recovered: lpush to '{result_q_name}' took {retry_push_time} seconds.")
+                except Exception as e:
+                    return {"statusCode": 500, "body": f"Redis failure: {e}"}
 
-        except json.JSONDecodeError as e:
-            print(f"Error decoding task JSON from queue: {task_json} - {str(e)}")
-        except redis.exceptions.ConnectionError as e:
-            print(f"Redis connection error: {str(e)}. Attempting to reinitialize.")
-            redisClient = initRedis() # Reinitialize blocking client
+            tasks_processed += 1
+            if tasks_processed % 50 == 0:
+                print(f"[INFO] Processed {tasks_processed} tasks so far...")
+
         except Exception as e:
-            print(f"An unhandled error occurred in worker for task {task.get('id', 'N/A')}: {str(e)}")
-            time.sleep(1)
+            print(f"ERROR: Unexpected error: {e}", file=sys.stderr)
+            time.sleep(5)
+            continue
 
     return {
-        "statusCode": 200, 
-        "body": "Worker function is continuously processing tasks."
+        "statusCode": 200,
+        "body": f"Worker processed {tasks_processed} tasks from '{worker_q_name}' and pushed results to '{result_q_name}'."
     }
