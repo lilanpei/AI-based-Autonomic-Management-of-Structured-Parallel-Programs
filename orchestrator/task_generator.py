@@ -30,27 +30,37 @@ def generate_and_push_tasks(num_tasks_to_generate, redis_client, input_queue):
             "task_deadline": None,             # Placeholder for task deadline
         }
 
+        # Convert to JSON and get size before pushing
+        current_time = time.strftime("%Y-%m-%d %H:%M:%S")        
+        task_json = json.dumps(task_payload)
+        json_size = len(task_json.encode('utf-8'))  # Size in bytes
+
         try:
             # Push the JSON string of the task payload to the Redis list
-            redis_client.lpush(input_queue, json.dumps(task_payload))
+            redis_client.lpush(input_queue, task_json)
+
+            # Log detailed information about the pushed task
+            print(f"[{current_time}] Pushed task {i+1}/{num_tasks_to_generate}: "
+                  f"size={json_size} bytes, matrix={task_data_size}x{task_data_size}")
 
             if (i + 1) % 100 == 0 or (i + 1) == num_tasks_to_generate:
                 time.sleep(1)  # Sleep to avoid overwhelming Redis with too many requests at once
-                print(f"  Pushed {i + 1}/{num_tasks_to_generate} tasks. Last task data size: {task_data_size}x{task_data_size}")
+                print(f"  Batch update: Pushed {i + 1}/{num_tasks_to_generate} tasks. Last task data size: {task_data_size}x{task_data_size}")
         except redis.exceptions.ConnectionError as e:
-            print(f"Redis lpush connection error: {str(e)}. Attempting to reinitialize.")
+            print(f"[{current_time}] Redis lpush connection error: {str(e)}. Attempting to reinitialize.")
             time.sleep(5)
             try:
                 redis_client = init_redis_client() # Reinitialize blocking client
-                redis_client.lpush(input_queue, json.dumps(task_payload))
+                redis_client.lpush(input_queue, task_json)
+                print(f"[{current_time}] Recovered: Pushed task {i+1} after reconnection")
             except Exception as init_e:
-                print(f"CRITICAL ERROR: Redis reinit and lpush failed: {init_e}", file=sys.stderr)
+                print(f"[{current_time}] CRITICAL ERROR: Redis reinit and lpush failed: {init_e}", file=sys.stderr)
                 return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
         except Exception as e:
-            print(f"ERROR: Failed to push task {i+1}: {e}", file=sys.stderr)
+            print(f"[{current_time}] ERROR: Failed to push task {i+1}: {e}", file=sys.stderr)
             return
 
-    print(f"Successfully finished generating and pushing {num_tasks_to_generate} tasks to '{input_queue}'.")
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Successfully finished generating and pushing {num_tasks_to_generate} tasks to '{input_queue}'.")
 
 
 if __name__ == "__main__":
