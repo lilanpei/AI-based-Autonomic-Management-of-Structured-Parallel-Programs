@@ -55,13 +55,19 @@ def handle(event, context):
     while True:
         try:
             try:
+                pop_start = time.time()
                 raw_input_task = redisClient.lpop(input_q_name)
+                pop_time = time.time() - pop_start
+                print(f"[INFO] lpop from '{input_q_name}' took {pop_time} seconds.")
             except redis.exceptions.ConnectionError as e:
                 print(f"Redis lpop connection error: {str(e)}. Attempting to reinitialize.")
                 time.sleep(5)
                 try:
                     redisClient = init_redis_client() # Reinitialize blocking client
+                    retry_pop_start = time.time()
                     raw_input_task = redisClient.lpop(input_q_name)
+                    retry_pop_time = time.time() - retry_pop_start
+                    print(f"[INFO] Recovered: lpop from '{input_q_name}' took {retry_pop_time} seconds.")
                 except Exception as init_e:
                     print(f"CRITICAL ERROR: Redis reinit and lpop failed: {init_e}", file=sys.stderr)
                     return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
@@ -102,13 +108,19 @@ def handle(event, context):
             }
 
             try:
+                push_start = time.time()
                 redisClient.lpush(worker_q_name, json.dumps(structured_task))
+                push_time = time.time() - push_start
+                print(f"[INFO] lpush to '{worker_q_name}' took {push_time} seconds.")
             except redis.exceptions.ConnectionError as e:
                 print(f"Redis lpush connection error: {str(e)}. Attempting to reinitialize.")
                 time.sleep(5)
                 try:
                     redisClient = init_redis_client() # Reinitialize blocking client
+                    retry_push_start = time.time()
                     redisClient.lpush(worker_q_name, json.dumps(structured_task))
+                    retry_push_time = time.time() - retry_push_start
+                    print(f"[INFO] Recovered: lpush to '{worker_q_name}' took {retry_push_time} seconds.")
                 except Exception as init_e:
                     print(f"CRITICAL ERROR: Redis reinit and lpush failed: {init_e}", file=sys.stderr)
                     return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
