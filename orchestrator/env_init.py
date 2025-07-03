@@ -16,4 +16,4 @@ if __name__ == "__main__":
             print(f"CRITICAL ERROR: Redis reinit failed: {init_e}", file=sys.stderr)
             raise
     clear_queues(redis_client, None)  # Clear all queues before generating tasks
-    scale_worker_deployment(2)
+    scale_worker_deployment(1)  # Scale down to 1 replica before generating tasks)

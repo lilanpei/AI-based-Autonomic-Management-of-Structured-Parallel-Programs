@@ -2,49 +2,57 @@ import sys
 import json
 import time
 import requests
+from threading import Thread
 from utilities import get_config
+
+def invoke_emitter_function(payload):
+    """
+    Sends an async POST request to the emitter function.
+    Includes a retry on failure.
+    """
+    try:
+        response = requests.post(
+            "http://127.0.0.1:8080/function/emitter",
+            data=json.dumps(payload),
+            headers={"Content-Type": "application/json"},
+            timeout=125  # Slightly above typical OpenFaaS timeout
+        )
+    except requests.exceptions.Timeout as e:
+        print(f"ERROR: Timeout while invoking emitter: {e}. Retrying...", file=sys.stderr)
+        time.sleep(5)
+        try:
+            response = requests.post(
+                "http://127.0.0.1:8080/function/emitter",
+                data=json.dumps(payload),
+                headers={"Content-Type": "application/json"},
+                timeout=125
+            )
+        except Exception as retry_e:
+            print(f"Timeout occurred during retry for emitter: {retry_e}", file=sys.stderr)
+            return
+
+    except Exception as e:
+        print(f"ERROR: Failed to invoke emitter: {e}", file=sys.stderr)
+        return
+
+    print("[INFO] Invoked emitter function")
+    print(f"Status Code: {response.status_code}")
+    print("Response Body:", response.text)
 
 def main():
     config = get_config()
 
-    # Prepare JSON payload
-    request_payload = {
+    payload = {
         "start_flag": True,
         "input_queue_name": config["input_queue_name"],
         "worker_queue_name": config["worker_queue_name"]
     }
 
-    try:
-        res = requests.post(
-            "http://127.0.0.1:8080/function/emitter",
-            data=json.dumps(request_payload),
-            headers={"Content-Type": "application/json"},
-            timeout=125  # Slightly more than function timeout
-        )
-    except requests.exceptions.Timeout as retry_e:
-        print(f"ERROR: Timeout while trying to invoke Emitter function: {retry_e}. Retrying...", file=sys.stderr)
-        time.sleep(5)  # Wait before retrying
-        try:
-            res = requests.post(
-            "http://127.0.0.1:8080/function/emitter",
-            data=json.dumps(request_payload),
-            headers={"Content-Type": "application/json"},
-            timeout=125  # Slightly more than function timeout
-            )
-        except requests.exceptions.Timeout as retry_e:
-            print("Timeout occurred during retry. Exiting with error.", file=sys.stderr)
-            return {"statusCode": 500, "body": f"Emitter function retry failed: {retry_e}"}
+    # Launch POST request in a background thread
+    t = Thread(target=invoke_emitter_function, args=(payload,))
+    t.start()
 
-    except json.JSONDecodeError as e:
-        print(f"ERROR: Failed to decode JSON response from Emitter function: {e}", file=sys.stderr)
-        return {"statusCode": 500, "body": f"Emitter function response parsing failed: {e}"}
-    except Exception as e:
-        print(f"ERROR: Unexpected error while invoking Emitter function: {e}", file=sys.stderr)  
-        return {"statusCode": 500, "body": f"Emitter function invocation failed: {e}"}
-
-    print("Emitter Response:")
-    print(f"Status Code: {res.status_code}")
-    print("Response Body:", res.text)
+    print("[INFO] Launched async thread for emitter function invocation.")
 
 if __name__ == "__main__":
     main()

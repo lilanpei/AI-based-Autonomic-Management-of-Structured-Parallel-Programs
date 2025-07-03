@@ -1,18 +1,20 @@
 import sys
 import time
 import json
+import threading
 import requests
-from utilities import get_config, init_redis_client, scale_worker_deployment
+from utilities import get_config, scale_worker_deployment
 
-def invoke_worker_function(replica_count):
+
+def invoke_worker_function_concurrently(replica_count):
     """
-    Invokes the worker function via HTTP POST for each replica.
+    Invokes the worker function via HTTP POST for each replica concurrently via the OpenFaaS gateway.
     """
     config_data = get_config()
     worker_q = config_data["worker_queue_name"]
     output_q = config_data["output_queue_name"]
 
-    for i in range(replica_count):
+    def invoke(i):
         payload = {
             "start_flag": True,
             "worker_queue_name": worker_q,
@@ -21,28 +23,25 @@ def invoke_worker_function(replica_count):
 
         try:
             response = requests.post(
-                "http://127.0.0.1:8080/function/worker",
+                "http://127.0.0.1:8080/function/worker",  # Local gateway path
                 data=json.dumps(payload),
-                headers={"Content-Type": "application/json"}
+                headers={"Content-Type": "application/json"},
+                timeout=10
             )
-        except requests.exceptions.Timeout as retry_e:
-            print(f"ERROR: Timeout while trying to invoke worker replica {i}: {retry_e}. Retrying...", file=sys.stderr)
-            time.sleep(5)
-            try:
-                response = requests.post(
-                    "http://127.0.0.1:8080/function/worker",
-                    data=json.dumps(payload),
-                    headers={"Content-Type": "application/json"}
-                )
-            except requests.exceptions.Timeout:
-                print(f"Timeout occurred during retry for worker {i}. Exiting with error.", file=sys.stderr)
-                return {"statusCode": 500, "body": f"Worker function retry failed: {retry_e}"}
+            print(f"[INFO] Invoked worker request {i} - Status: {response.status_code}")
+            print("Response Body:", response.text)
         except requests.exceptions.RequestException as e:
-            print(f"ERROR: Failed to invoke worker replica {i}: {e}", file=sys.stderr)
-            return {"statusCode": 500, "body": f"Worker function invocation failed: {e}"}
+            print(f"[ERROR] Failed to invoke worker request {i}: {e}", file=sys.stderr)
 
-        print(f"[INFO] Invoked worker replica {i} - Status: {response.status_code}")
-        print("Response Body:", response.text)
+    threads = []
+    for i in range(replica_count):
+        t = threading.Thread(target=invoke, args=(i,))
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join()
+
 
 def main():
     if len(sys.argv) != 2:
@@ -58,7 +57,8 @@ def main():
         sys.exit(1)
 
     scale_worker_deployment(replicas)
-    invoke_worker_function(replicas)
+    invoke_worker_function_concurrently(replicas)
+
 
 if __name__ == "__main__":
     main()
