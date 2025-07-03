@@ -4,6 +4,8 @@ import yaml
 import json
 import time
 import redis
+import requests
+import threading
 import numpy as np
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
@@ -131,3 +133,40 @@ def scale_worker_deployment(replica_count, namespace="openfaas-fn", deployment_n
         except ApiException as retry_e:
             print(f"CRITICAL ERROR: Retry scaling deployment failed: {retry_e}", file=sys.stderr)
             return {"statusCode": 500, "body": f"Deployment scaling failure: {retry_e}"}
+
+
+def invoke_worker_function_concurrently(replica_count):
+    """
+    Invokes the worker function via HTTP POST for each replica concurrently via the OpenFaaS gateway.
+    """
+    config_data = get_config()
+    worker_q = config_data["worker_queue_name"]
+    result_q = config_data["result_queue_name"]
+
+    def invoke(i):
+        payload = {
+            "start_flag": True,
+            "worker_queue_name": worker_q,
+            "result_queue_name": result_q
+        }
+
+        try:
+            response = requests.post(
+                "http://127.0.0.1:8080/function/worker",  # Local gateway path
+                data=json.dumps(payload),
+                headers={"Content-Type": "application/json"},
+                timeout=10
+            )
+            print(f"[INFO] Invoked worker request {i} - Status: {response.status_code}")
+            print("Response Body:", response.text)
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Failed to invoke worker request {i}: {e}", file=sys.stderr)
+
+    threads = []
+    for i in range(replica_count):
+        t = threading.Thread(target=invoke, args=(i,))
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join()

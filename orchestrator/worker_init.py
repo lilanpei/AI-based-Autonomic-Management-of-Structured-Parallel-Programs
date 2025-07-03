@@ -1,47 +1,6 @@
 import sys
-import time
 import json
-import threading
-import requests
-from utilities import get_config, scale_worker_deployment
-
-
-def invoke_worker_function_concurrently(replica_count):
-    """
-    Invokes the worker function via HTTP POST for each replica concurrently via the OpenFaaS gateway.
-    """
-    config_data = get_config()
-    worker_q = config_data["worker_queue_name"]
-    result_q = config_data["result_queue_name"]
-
-    def invoke(i):
-        payload = {
-            "start_flag": True,
-            "worker_queue_name": worker_q,
-            "result_queue_name": result_q
-        }
-
-        try:
-            response = requests.post(
-                "http://127.0.0.1:8080/function/worker",  # Local gateway path
-                data=json.dumps(payload),
-                headers={"Content-Type": "application/json"},
-                timeout=10
-            )
-            print(f"[INFO] Invoked worker request {i} - Status: {response.status_code}")
-            print("Response Body:", response.text)
-        except requests.exceptions.RequestException as e:
-            print(f"[ERROR] Failed to invoke worker request {i}: {e}", file=sys.stderr)
-
-    threads = []
-    for i in range(replica_count):
-        t = threading.Thread(target=invoke, args=(i,))
-        t.start()
-        threads.append(t)
-
-    for t in threads:
-        t.join()
-
+from utilities import get_config, scale_worker_deployment, invoke_worker_function_concurrently
 
 def main():
     if len(sys.argv) != 2:
