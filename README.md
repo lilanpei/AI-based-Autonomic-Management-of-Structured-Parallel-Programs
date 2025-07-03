@@ -106,7 +106,7 @@ python orchestrator/worker_scaler.py -1
 
 ## ⚙️ Customization
 
-- Update orchestrator/configuration.yml to customize:
+- Update `orchestrator/configuration.yml` to customize:
   - Redis host/port
   - Input/output/result queue names
-- Adjust default task deadlines in task_generator.py as needed
+- Adjust default task deadlines in `task_generator.py` as needed
