@@ -5,6 +5,8 @@ import json
 import time
 import redis
 import numpy as np
+from kubernetes import client, config
+from kubernetes.client.rest import ApiException
 
 _config = None # Private variable to hold loaded configuration
 
@@ -88,3 +90,44 @@ def clear_queues(self, redis_client, queue_names=None):
             except Exception as init_e:
                 print(f"CRITICAL ERROR: Redis reinit failed: {init_e}", file=sys.stderr)
                 return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
+
+
+def scale_worker_deployment(replica_count, namespace="openfaas-fn", deployment_name="worker"):
+    """
+    Scales the Kubernetes deployment to the desired number of replicas.
+    """
+    try:
+        config.load_incluster_config()
+    except:
+        try:
+            config.load_kube_config()  # fallback to local config for testing
+        except Exception as e:
+            print(f"ERROR: Could not load Kubernetes config: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        api_instance = client.AppsV1Api()
+        body = {
+            "spec": {
+                "replicas": replica_count
+            }
+        }
+        api_instance.patch_namespaced_deployment_scale(
+            name=deployment_name,
+            namespace=namespace,
+            body=body,
+        )
+        print(f"[INFO] Successfully scaled deployment '{deployment_name}' to {replica_count} replicas.")
+    except ApiException as e:
+        print(f"ERROR: Failed to scale deployment '{deployment_name}': {e}", file=sys.stderr)
+        time.sleep(5)
+        try:
+            api_instance.patch_namespaced_deployment_scale(
+                name=deployment_name,
+                namespace=namespace,
+                body=body,
+            )
+            print(f"[INFO] Retry succeeded: deployment scaled.")
+        except ApiException as retry_e:
+            print(f"CRITICAL ERROR: Retry scaling deployment failed: {retry_e}", file=sys.stderr)
+            return {"statusCode": 500, "body": f"Deployment scaling failure: {retry_e}"}

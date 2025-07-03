@@ -2,49 +2,7 @@ import sys
 import time
 import json
 import requests
-from kubernetes import client, config
-from kubernetes.client.rest import ApiException
-from utilities import get_config
-
-def scale_worker_deployment(replica_count, namespace="openfaas-fn", deployment_name="worker"):
-    """
-    Scales the Kubernetes deployment to the desired number of replicas.
-    """
-    try:
-        config.load_incluster_config()
-    except:
-        try:
-            config.load_kube_config()  # fallback to local config for testing
-        except Exception as e:
-            print(f"ERROR: Could not load Kubernetes config: {e}", file=sys.stderr)
-            sys.exit(1)
-
-    try:
-        api_instance = client.AppsV1Api()
-        body = {
-            "spec": {
-                "replicas": replica_count
-            }
-        }
-        api_instance.patch_namespaced_deployment_scale(
-            name=deployment_name,
-            namespace=namespace,
-            body=body
-        )
-        print(f"[INFO] Successfully scaled deployment '{deployment_name}' to {replica_count} replicas.")
-    except ApiException as e:
-        print(f"ERROR: Failed to scale deployment '{deployment_name}': {e}", file=sys.stderr)
-        time.sleep(5)
-        try:
-            api_instance.patch_namespaced_deployment_scale(
-                name=deployment_name,
-                namespace=namespace,
-                body=body
-            )
-            print(f"[INFO] Retry succeeded: deployment scaled.")
-        except ApiException as retry_e:
-            print(f"CRITICAL ERROR: Retry scaling deployment failed: {retry_e}", file=sys.stderr)
-            sys.exit(1)
+from utilities import get_config, init_redis_client, scale_worker_deployment
 
 def invoke_worker_function(replica_count):
     """
@@ -67,8 +25,8 @@ def invoke_worker_function(replica_count):
                 data=json.dumps(payload),
                 headers={"Content-Type": "application/json"}
             )
-        except requests.exceptions.RequestException as e:
-            print(f"ERROR: Request to worker {i} failed: {e}", file=sys.stderr)
+        except requests.exceptions.Timeout as retry_e:
+            print(f"ERROR: Timeout while trying to invoke worker replica {i}: {retry_e}. Retrying...", file=sys.stderr)
             time.sleep(5)
             try:
                 response = requests.post(
@@ -76,9 +34,12 @@ def invoke_worker_function(replica_count):
                     data=json.dumps(payload),
                     headers={"Content-Type": "application/json"}
                 )
-            except Exception as retry_e:
-                print(f"CRITICAL ERROR: Retry failed for worker {i}: {retry_e}", file=sys.stderr)
-                continue  # Skip to next replica
+            except requests.exceptions.Timeout:
+                print(f"Timeout occurred during retry for worker {i}. Exiting with error.", file=sys.stderr)
+                return {"statusCode": 500, "body": f"Worker function retry failed: {retry_e}"}
+        except requests.exceptions.RequestException as e:
+            print(f"ERROR: Failed to invoke worker replica {i}: {e}", file=sys.stderr)
+            return {"statusCode": 500, "body": f"Worker function invocation failed: {e}"}
 
         print(f"[INFO] Invoked worker replica {i} - Status: {response.status_code}")
         print("Response Body:", response.text)

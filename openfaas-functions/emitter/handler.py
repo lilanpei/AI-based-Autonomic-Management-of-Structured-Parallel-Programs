@@ -53,6 +53,7 @@ def handle(event, context):
     tasks_generated_count = 0
 
     while True:
+        time.sleep(1)
         try:
             try:
                 pop_start = time.time()

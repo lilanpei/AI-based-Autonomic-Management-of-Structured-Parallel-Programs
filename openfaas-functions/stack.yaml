@@ -13,9 +13,9 @@ functions:
       redis_hostname: "redis-master.redis.svc.cluster.local"
       redis_port: 6379
     annotations: # ESSENTIAL for a long-running worker
-      exec_timeout: "0"  # Infinite timeout
-      read_timeout: "0"
-      write_timeout: "0"
+      read_timeout: "120s"   # Time to read HTTP request
+      write_timeout: "120s"  # Time to write HTTP response
+      exec_timeout: "120s"   # Maximum execution time
       prometheus.io.scrape: True
       prometheus.io.port: "8080"
 
@@ -30,9 +30,9 @@ functions:
       TASK_QUEUE_NAME: task_queue
       RESULTS_QUEUE_NAME: results_queue
     annotations: # ESSENTIAL for a long-running worker
-      exec_timeout: "0"  # Infinite timeout
-      read_timeout: "0"
-      write_timeout: "0"
+      read_timeout: "120s"   # Time to read HTTP request
+      write_timeout: "120s"  # Time to write HTTP response
+      exec_timeout: "120s"   # Maximum execution time
       prometheus.io.scrape: True
       prometheus.io.port: "8080"
     limits:
@@ -53,9 +53,9 @@ functions:
       RESULTS_QUEUE_NAME: results_queue
       COMPLETED_RESULTS_SET_NAME: completed_tasks_results
     annotations: 
-      exec_timeout: "0"  # Infinite timeout
-      read_timeout: "0"
-      write_timeout: "0"
+      read_timeout: "120s"   # Time to read HTTP request
+      write_timeout: "120s"  # Time to write HTTP response
+      exec_timeout: "120s"   # Maximum execution time
       prometheus.io.scrape: True
       prometheus.io.port: "8080"
 

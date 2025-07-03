@@ -39,6 +39,7 @@ def handle(event, context):
         start_flag = request_body.get('start_flag')
         worker_q_name = request_body.get('worker_queue_name')
         result_q_name = request_body.get('result_queue_name')
+        print(f"[INFO] Received request with start_flag={start_flag}, worker_queue_name='{worker_q_name}', result_queue_name='{result_q_name}'")
     except (json.JSONDecodeError, TypeError):
         return {"statusCode": 400, "body": "Invalid or missing JSON in request body."}
 
@@ -52,6 +53,7 @@ def handle(event, context):
     tasks_processed = 0
 
     while True:
+        time.sleep(1)
         try:
             try:
                 pop_start = time.time()
@@ -74,22 +76,22 @@ def handle(event, context):
                 print(f"[INFO] No tasks in queue '{worker_q_name}'. Reinvoking self...")
                 time.sleep(10)
 
-                payload = {
-                    "start_flag": True,
-                    "worker_queue_name": worker_q_name,
-                    "result_queue_name": result_q_name
-                }
+                # payload = {
+                #     "start_flag": True,
+                #     "worker_queue_name": worker_q_name,
+                #     "result_queue_name": result_q_name
+                # }
 
-                try:
-                    response = requests.post(
-                        "http://127.0.0.1:8080/function/worker",
-                        data=json.dumps(payload),
-                        headers={"Content-Type": "application/json"}
-                    )
-                    print(f"[INFO] Reinvoked worker - Status: {response.status_code}")
-                    print("Response Body:", response.text)
-                except requests.exceptions.RequestException as e:
-                    print(f"ERROR: Self-reinvoke failed: {e}", file=sys.stderr)
+                # try:
+                #     response = requests.post(
+                #         "http://127.0.0.1:8080/function/worker",
+                #         data=json.dumps(payload),
+                #         headers={"Content-Type": "application/json"}
+                #     )
+                #     print(f"[INFO] Reinvoked worker - Status: {response.status_code}")
+                #     print("Response Body:", response.text)
+                # except requests.exceptions.RequestException as e:
+                #     print(f"ERROR: Self-reinvoke failed: {e}", file=sys.stderr)
 
                 break  # Exit current loop after reinvoking
 
@@ -97,7 +99,8 @@ def handle(event, context):
                 task = json.loads(raw_task)
                 task_id = task.get("id")
                 task_data = task.get("data")
-                task_application = task.get("task_application")
+                task_application = task.get("application")
+                print(f"[INFO] Processing task ID: {task_id}, Application: {task_application}")
 
                 if task_application != "matrix_multiplication":
                     raise ValueError(f"Unsupported task_application: {task_application}")
@@ -105,8 +108,8 @@ def handle(event, context):
                 if not task_data or not isinstance(task_data, dict):
                     raise ValueError("Invalid task_data format.")
 
-                matrix_a = np.array(task_data.get("matrix_a"))
-                matrix_b = np.array(task_data.get("matrix_b"))
+                matrix_a = np.array(task_data.get("matrix_A"))
+                matrix_b = np.array(task_data.get("matrix_B"))
 
                 if matrix_a.shape[1] != matrix_b.shape[0]:
                     raise ValueError("Matrix dimensions incompatible for multiplication.")
@@ -118,6 +121,7 @@ def handle(event, context):
             start_time = time.time()
             result_matrix = np.dot(matrix_a, matrix_b)
             end_time = time.time()
+            print(f"[INFO] Task ID: {task_id} completed in {end_time - start_time} seconds.")
 
             structured_result = {
                 "task_id": task_id,
