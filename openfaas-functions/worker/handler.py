@@ -100,6 +100,8 @@ def handle(event, context):
                 task_id = task.get("id")
                 task_data = task.get("data")
                 task_application = task.get("application")
+                task_deadline = task.get("deadline")
+                task_emit_timestamp = task.get("timestamp")
                 print(f"[INFO] Processing task ID: {task_id}, Application: {task_application}")
 
                 if task_application != "matrix_multiplication":
@@ -125,10 +127,13 @@ def handle(event, context):
 
             structured_result = {
                 "task_id": task_id,
-                "result_data": result_matrix.tolist(),
+                "result_data": {"result_matrix":result_matrix.tolist()},  # Convert numpy array to list for JSON serialization
+                "task_application": task_application,
+                "task_emit_timestamp": task_emit_timestamp,
+                "task_deadline": task_deadline,
                 "output_size": result_matrix.size,
                 "complete_time": end_time - start_time,
-                "timestamp": end_time
+                "complete_timestamp": end_time
             }
 
             try:

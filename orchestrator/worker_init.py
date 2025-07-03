@@ -12,13 +12,13 @@ def invoke_worker_function_concurrently(replica_count):
     """
     config_data = get_config()
     worker_q = config_data["worker_queue_name"]
-    output_q = config_data["output_queue_name"]
+    result_q = config_data["result_queue_name"]
 
     def invoke(i):
         payload = {
             "start_flag": True,
             "worker_queue_name": worker_q,
-            "result_queue_name": output_q
+            "result_queue_name": result_q
         }
 
         try:
