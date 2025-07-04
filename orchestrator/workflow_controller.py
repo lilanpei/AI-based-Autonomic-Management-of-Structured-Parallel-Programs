@@ -89,7 +89,7 @@ def monitor_queues(interval=5):
 def main():
     parser = argparse.ArgumentParser(description="Workflow Controller for AI Task Processing")
     parser.add_argument('--mode', choices=['pipeline', 'farm'], required=True, help='Select execution mode')
-    parser.add_argument('--feedback', type=bool, default=False, help='Enable collector feedback')
+    parser.add_argument('--feedback', action=argparse.BooleanOptionalAction, help='Enable collector feedback')
     parser.add_argument('--tasks', type=int, default=1000, help='Number of tasks to generate')
     parser.add_argument('--workers', type=int, default=1, help='Number of workers (used only in farm mode)')
 
@@ -97,6 +97,7 @@ def main():
 
     # Common startup
     run_script("env_init.py")
+    time.sleep(10)  # Allow time for environment initialization
     run_script("emitter_init.py", ["True"])  # Start emitter with start_flag=True
 
     if args.mode == "pipeline":

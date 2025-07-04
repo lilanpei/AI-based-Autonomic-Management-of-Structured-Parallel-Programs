@@ -22,7 +22,7 @@ def main():
 
     invoke_function_async("emitter", payload)
 
-    print("[INFO] Launched async thread for emitter function invocation.")
+    print(f"Emitter initialized with start_flag={start_flag}.")
 
 if __name__ == "__main__":
     main()

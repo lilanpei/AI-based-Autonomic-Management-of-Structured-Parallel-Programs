@@ -28,7 +28,7 @@ def main():
 
     invoke_function_async("collector", payload)
 
-    print("[INFO] Launched async thread for collector function invocation.")
+    print(f"Collector initialized with start_flag={start_flag} and collector_feedback_flag={collector_feedback_flag}.")
 
 if __name__ == "__main__":
     main()

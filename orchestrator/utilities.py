@@ -6,6 +6,7 @@ import time
 import redis
 import requests
 import threading
+import subprocess
 import numpy as np
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
@@ -95,7 +96,7 @@ def clear_queues(self, redis_client, queue_names=None):
                 return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
 
 
-def scale_worker_deployment(replica_count, namespace="openfaas-fn", deployment_name="worker"):
+def scale_worker_deployment(replica_count, deployment_name="worker", namespace="openfaas-fn"):
     """
     Scales the Kubernetes deployment to the desired number of replicas.
     """
@@ -159,3 +160,13 @@ def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:
     print(f"[INFO] Async invoked '{function_name}' function")
     print(f"Status Code: {response.status_code}")
     print("Response Body:", response.text)
+
+def restart_function(function_name):
+    try:
+        subprocess.run(
+            ["kubectl", "rollout", "restart", f"deploy/{function_name}", "-n", "openfaas-fn"],
+            check=True
+        )
+        print(f"[INFO] Restarted function: {function_name}")
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Failed to restart function '{function_name}': {e}")
