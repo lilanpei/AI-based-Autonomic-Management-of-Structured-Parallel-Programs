@@ -47,7 +47,7 @@ AI-based-Autonomic-Management-of-Structured-Parallel-Programs/
 
 - Kubernetes with **OpenFaaS** installed
 - `faas-cli`, `kubectl`, `Python 3.13.5`
-- Redis running inside the cluster and locally
+- Redis serves both OpenFaaS functions and local scripts
 - Install Python dependencies:
   ```bash
   pip install -r orchestrator/requirements.txt
@@ -73,7 +73,8 @@ Choose between **Pipeline** and **Farm** execution modes:
 - Example with feedback enabled:
 
 ```bash
-python orchestrator/workflow_controller.py --mode pipeline --workers 1 --feedback True --tasks 1000
+cd orchestrator
+python workflow_controller.py --mode pipeline --workers 1 --feedback True --tasks 1000
 ```
 
 ### 🌾 Farm Mode
@@ -84,7 +85,8 @@ python orchestrator/workflow_controller.py --mode pipeline --workers 1 --feedbac
 - Example with 4 workers and feedback disabled:
 
 ```bash
-python orchestrator/workflow_controller.py --mode farm --workers 4 --feedback False --tasks 1000
+cd orchestrator
+python workflow_controller.py --mode farm --workers 4 --feedback False --tasks 1000
 ```
 ## 🔁 Manual Worker Scaling
 While the workflow is running, use `worker_scaler.py` to manually adjust worker replicas:
