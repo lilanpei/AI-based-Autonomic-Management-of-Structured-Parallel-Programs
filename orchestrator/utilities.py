@@ -70,6 +70,7 @@ def clear_queues(self, redis_client, queue_names=None):
         queue_names = [
             config["input_queue_name"],
             config["worker_queue_name"],
+            config["result_queue_name"],
             config["output_queue_name"]
         ]
 
