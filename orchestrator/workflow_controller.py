@@ -1,6 +1,11 @@
 import subprocess
 import argparse
 import sys
+import time
+import redis
+
+# Queue names (adjust if needed)
+QUEUE_NAMES = ["input_queue", "worker_queue", "result_queue", "output_queue"]
 
 def run_script(script_name, args=[]):
     cmd = ["python", script_name] + [str(arg) for arg in args]
@@ -9,6 +14,21 @@ def run_script(script_name, args=[]):
     if result.returncode != 0:
         print(f"[ERROR] Script {script_name} failed.")
         sys.exit(1)
+
+def monitor_queues(interval=2):
+    try:
+        r = redis.Redis(host='localhost', port=6379, db=0)
+        print("\n[INFO] Starting Redis queue monitoring...")
+        while True:
+            print("[QUEUE STATUS]")
+            for queue in QUEUE_NAMES:
+                length = r.llen(queue)
+                print(f"  {queue}: {length} items")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\n[INFO] Queue monitoring stopped by user.")
+    except redis.ConnectionError:
+        print("[ERROR] Could not connect to Redis. Make sure Redis is running.")
 
 def main():
     parser = argparse.ArgumentParser(description="Workflow Controller for AI Task Processing")
@@ -32,6 +52,9 @@ def main():
         run_script("worker_init.py", [str(args.workers), "True"])
         run_script("collector_init.py", ["True", "True" if args.feedback else "False"])
         run_script("task_generator.py", [str(args.tasks)])
+
+    # Start Redis queue monitoring
+    monitor_queues()
 
 if __name__ == "__main__":
     main()

@@ -51,8 +51,9 @@ def handle(event, context):
         try:
             raw_result = redisClient.lpop(result_queue_name)
             if raw_result is None:
-                print(f"[INFO] No more results in queue '{result_queue_name}'.")
-                break
+                print(f"[INFO] Result queue '{result_queue_name}' is empty. Waiting for new results...")
+                time.sleep(10)
+                continue  # Wait before checking again
 
             result = json.loads(raw_result)
             task_id = result.get("task_id")
@@ -88,6 +89,7 @@ def handle(event, context):
             if qos:
                 tasks_met_deadline += 1
 
+            print(f"[INFO] Collector feedback flag: {collector_feedback_flag}, Input queue name: {input_queue_name}")
             if collector_feedback_flag and input_queue_name:
                 print(f"[INFO] Collector feedback enabled. Processing task {task_id} for feedback.")
                 matrix = np.array(result_data.get("result_matrix"))

@@ -74,9 +74,9 @@ def handle(event, context):
                     return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
                 
             if raw_input_task is None:
-                print(f"Input queue '{input_q_name}' is empty. Finished processing.")
-                time.sleep(10)
-                break # continue
+                print(f"[INFO] No more tasks in queue '{input_q_name}'. Waiting for new tasks...")
+                time.sleep(10)  # No tasks in queue, wait before checking again
+                continue
 
             try:
                 input_task = json.loads(raw_input_task)
