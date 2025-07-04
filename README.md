@@ -74,7 +74,7 @@ Choose between **Pipeline** and **Farm** execution modes:
 
 ```bash
 cd orchestrator
-python workflow_controller.py --mode pipeline --workers 1 --feedback True --tasks 1000
+python workflow_controller.py --mode pipeline --workers 1 --feedback --tasks 1000
 ```
 
 ### 🌾 Farm Mode
@@ -86,7 +86,7 @@ python workflow_controller.py --mode pipeline --workers 1 --feedback True --task
 
 ```bash
 cd orchestrator
-python workflow_controller.py --mode farm --workers 4 --feedback False --tasks 1000
+python workflow_controller.py --mode farm --workers 4 --feedback --tasks 1000
 ```
 ## 🔁 Manual Worker Scaling
 While the workflow is running, use `worker_scaler.py` to manually adjust worker replicas:
