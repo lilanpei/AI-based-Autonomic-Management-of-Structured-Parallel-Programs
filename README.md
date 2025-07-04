@@ -18,10 +18,10 @@ Key features:
 AI-based-Autonomic-Management-of-Structured-Parallel-Programs/
 ├── openfaas-functions/
 │   ├── emitter/
-│   │   ├──handler.py           # Emits tasks from input queue to worker queue
+│   │   ├── handler.py           # Emits tasks from input queue to worker queue
 │   │   └── requirements.txt    # Dependencies
 │   ├── worker/
-│   │   ├──handler.py           # Performs matrix multiplication and push results into result queue
+│   │   ├── handler.py           # Performs matrix multiplication and push results into result queue
 │   │   └── requirements.txt    # Dependencies
 │   ├── collector/
 │   │   ├── handler.py           # Collects results, sort result by emit timestamp into output queue, and evaluates QoS, sends feedback to input queue if enabled
