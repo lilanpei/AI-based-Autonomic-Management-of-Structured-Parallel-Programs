@@ -20,7 +20,7 @@ def main():
 
     payload = {
         "start_flag": start_flag,
-        "Feedback_flag": collector_feedback_flag,
+        "collector_feedback_flag": collector_feedback_flag,
         "input_queue_name": config["input_queue_name"],
         "result_queue_name": config["result_queue_name"],
         "output_queue_name": config["output_queue_name"]

@@ -89,6 +89,7 @@ def handle(event, context):
                 tasks_met_deadline += 1
 
             if collector_feedback_flag and input_queue_name:
+                print(f"[INFO] Collector feedback enabled. Processing task {task_id} for feedback.")
                 matrix = np.array(result_data.get("result_matrix"))
                 new_task = {
                     "task_application": task_application,
