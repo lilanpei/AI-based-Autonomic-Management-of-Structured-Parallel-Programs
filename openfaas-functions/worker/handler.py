@@ -76,22 +76,22 @@ def handle(event, context):
                 print(f"[INFO] No tasks in queue '{worker_q_name}'. Reinvoking self...")
                 time.sleep(10)
 
-                # payload = {
-                #     "start_flag": True,
-                #     "worker_queue_name": worker_q_name,
-                #     "result_queue_name": result_q_name
-                # }
+                payload = {
+                    "start_flag": True,
+                    "worker_queue_name": worker_q_name,
+                    "result_queue_name": result_q_name
+                }
 
-                # try:
-                #     response = requests.post(
-                #         "http://127.0.0.1:8080/function/worker",
-                #         data=json.dumps(payload),
-                #         headers={"Content-Type": "application/json"}
-                #     )
-                #     print(f"[INFO] Reinvoked worker - Status: {response.status_code}")
-                #     print("Response Body:", response.text)
-                # except requests.exceptions.RequestException as e:
-                #     print(f"ERROR: Self-reinvoke failed: {e}", file=sys.stderr)
+                try:
+                    response = requests.post(
+                        "http://gateway.openfaas.svc.cluster.local:8080/async-function/worker",
+                        data=json.dumps(payload),
+                        headers={"Content-Type": "application/json"}
+                    )
+                    print(f"[INFO] Reinvoked worker - Status: {response.status_code}")
+                    print("Response Body:", response.text)
+                except requests.exceptions.RequestException as e:
+                    print(f"ERROR: Self-reinvoke failed: {e}", file=sys.stderr)
 
                 break  # Exit current loop after reinvoking
 

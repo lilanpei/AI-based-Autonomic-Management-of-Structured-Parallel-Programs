@@ -135,38 +135,26 @@ def scale_worker_deployment(replica_count, namespace="openfaas-fn", deployment_n
             return {"statusCode": 500, "body": f"Deployment scaling failure: {retry_e}"}
 
 
-def invoke_worker_function_concurrently(replica_count):
+def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080", timeout=125):
     """
-    Invokes the worker function via HTTP POST for each replica concurrently via the OpenFaaS gateway.
+    Asynchronously invokes an OpenFaaS function via /async-function/<function_name>.
+
+    Args:
+        function_name (str): Name of the OpenFaaS function (e.g., "emitter", "collector", "worker")
+        payload (dict): JSON-serializable data to send
+        gateway_url (str): OpenFaaS gateway URL
+        timeout (int): Request timeout in seconds
     """
-    config_data = get_config()
-    worker_q = config_data["worker_queue_name"]
-    result_q = config_data["result_queue_name"]
+    url = f"{gateway_url}/async-function/{function_name}"
+    headers = {"Content-Type": "application/json"}
 
-    def invoke(i):
-        payload = {
-            "start_flag": True,
-            "worker_queue_name": worker_q,
-            "result_queue_name": result_q
-        }
+    try:
+        response = requests.post(url, data=json.dumps(payload), headers=headers, timeout=timeout)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"[ERROR] Failed to asynchronously invoke '{function_name}': {e}", file=sys.stderr)
+        return
 
-        try:
-            response = requests.post(
-                "http://127.0.0.1:8080/function/worker",  # Local gateway path
-                data=json.dumps(payload),
-                headers={"Content-Type": "application/json"},
-                timeout=10
-            )
-            print(f"[INFO] Invoked worker request {i} - Status: {response.status_code}")
-            print("Response Body:", response.text)
-        except requests.exceptions.RequestException as e:
-            print(f"[ERROR] Failed to invoke worker request {i}: {e}", file=sys.stderr)
-
-    threads = []
-    for i in range(replica_count):
-        t = threading.Thread(target=invoke, args=(i,))
-        t.start()
-        threads.append(t)
-
-    for t in threads:
-        t.join()
+    print(f"[INFO] Async invoked '{function_name}' function")
+    print(f"Status Code: {response.status_code}")
+    print("Response Body:", response.text)

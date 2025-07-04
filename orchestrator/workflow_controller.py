@@ -21,16 +21,16 @@ def main():
 
     # Common startup
     run_script("env_init.py")
-    run_script("emitter_init.py")
+    run_script("emitter_init.py", ["True"])  # Start emitter with start_flag=True
 
     if args.mode == "pipeline":
-        run_script("worker_init.py", ["1"])
-        run_script("collector_init.py", ["True" if args.feedback else "False"])
+        run_script("worker_init.py", ["1", "True"])
+        run_script("collector_init.py", ["True", "True" if args.feedback else "False"])
         run_script("task_generator.py", [str(args.tasks)])
 
     elif args.mode == "farm":
-        run_script("worker_init.py", [str(args.workers)])
-        run_script("collector_init.py", ["True" if args.feedback else "False"])
+        run_script("worker_init.py", [str(args.workers), "True"])
+        run_script("collector_init.py", ["True", "True" if args.feedback else "False"])
         run_script("task_generator.py", [str(args.tasks)])
 
 if __name__ == "__main__":

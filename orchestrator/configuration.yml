@@ -4,4 +4,3 @@ input_queue_name: input_queue
 worker_queue_name: worker_queue
 result_queue_name: result_queue
 output_queue_name: output_queue
-collector_feedback_flag: False

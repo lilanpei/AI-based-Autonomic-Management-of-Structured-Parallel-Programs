@@ -1,58 +1,32 @@
 import sys
-import json
-import time
-import requests
-from threading import Thread
-from utilities import get_config
-
-def invoke_collector_function(payload):
-    """
-    Sends an async POST request to the collector function.
-    Includes a retry on failure.
-    """
-    try:
-        response = requests.post(
-            "http://127.0.0.1:8080/function/collector",
-            data=json.dumps(payload),
-            headers={"Content-Type": "application/json"},
-            timeout=125  # Slightly above typical OpenFaaS timeout
-        )
-    except requests.exceptions.Timeout as e:
-        print(f"ERROR: Timeout while invoking collector: {e}. Retrying...", file=sys.stderr)
-        time.sleep(5)
-        try:
-            response = requests.post(
-                "http://127.0.0.1:8080/function/collector",
-                data=json.dumps(payload),
-                headers={"Content-Type": "application/json"},
-                timeout=125
-            )
-        except Exception as retry_e:
-            print(f"Timeout occurred during retry for collector: {retry_e}", file=sys.stderr)
-            return
-
-    except Exception as e:
-        print(f"ERROR: Failed to invoke collector: {e}", file=sys.stderr)
-        return
-
-    print("[INFO] Invoked collector function")
-    print(f"Status Code: {response.status_code}")
-    print("Response Body:", response.text)
+from utilities import get_config, invoke_function_async
 
 def main():
+    if len(sys.argv) != 3:
+        print("Usage: python collector_init.py <start_flag: True|False> <collector_feedback_flag: True|False>")
+        sys.exit(1)
+
+    start_flag_input = sys.argv[1].lower()
+    feedback_flag_input = sys.argv[2].lower()
+
+    if start_flag_input not in ("true", "false") or feedback_flag_input not in ("true", "false"):
+        print("ERROR: Both start_flag and collector_feedback_flag must be 'True' or 'False'.")
+        sys.exit(1)
+
+    start_flag = start_flag_input == "true"
+    collector_feedback_flag = feedback_flag_input == "true"
+
     config = get_config()
 
     payload = {
-        "start_flag": True,
-        "Feedback_flag": config["collector_feedback_flag"],
+        "start_flag": start_flag,
+        "Feedback_flag": collector_feedback_flag,
         "input_queue_name": config["input_queue_name"],
         "result_queue_name": config["result_queue_name"],
         "output_queue_name": config["output_queue_name"]
     }
 
-    # Launch POST request in a background thread
-    t = Thread(target=invoke_collector_function, args=(payload,))
-    t.start()
+    invoke_function_async("collector", payload)
 
     print("[INFO] Launched async thread for collector function invocation.")
 

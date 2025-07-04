@@ -65,7 +65,7 @@ def handle(event, context):
             complete_time = result.get("complete_time")
 
             task_collect_timestamp = time.time()
-            deadline_exceeded = (complete_timestamp - task_emit_timestamp) > task_deadline
+            deadline_exceeded = (task_collect_timestamp - task_emit_timestamp) > task_deadline
             qos = not deadline_exceeded
 
             structured_result = {
