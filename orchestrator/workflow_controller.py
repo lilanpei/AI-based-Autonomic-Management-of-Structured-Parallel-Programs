@@ -14,7 +14,7 @@ def run_script(script_name, args=[]):
         print(f"[ERROR] Script {script_name} failed.")
         sys.exit(1)
 
-def monitor_queues(interval=10):
+def monitor_queues(interval=5):
     config = get_config()
     QUEUE_NAMES = [
         config["input_queue_name"],

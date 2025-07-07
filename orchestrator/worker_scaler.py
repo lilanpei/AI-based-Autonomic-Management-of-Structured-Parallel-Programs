@@ -40,7 +40,7 @@ def main():
         if new_replicas > 0:
             print(f"[INFO] Sending {count} control requests to stop processing tasks...")
             send_control_requests(False, count=count)           
-            time.sleep(10) # Allow time for the control requests to be processed
+            time.sleep(40) # Allow time for the control requests to be processed
             scale_function_deployment(new_replicas)
         else:
             if current_replicas == 1:
@@ -49,7 +49,7 @@ def main():
                 print("[INFO] At least one replica remains, scaled down to 1 replica.")
                 count = current_replicas - 1 # Ensure at least one replica remains
                 send_control_requests(False, count=count)
-                time.sleep(10) # Allow time for the control requests to be processed
+                time.sleep(40) # Allow time for the control requests to be processed
                 scale_function_deployment(1)
 
     print("[INFO] Waiting for the deployment to stabilize...")

@@ -21,37 +21,38 @@ def init_redis_client():
 def handle(event, context):
     print("!!!!!!!!!!!!! Collector function invoked !!!!!!!!!!!!!")
     global redisClient
-
-    if redisClient is None:
-        try:
-            redisClient = init_redis_client()
-        except redis.exceptions.ConnectionError as e:
-            print(f"Redis init error: {str(e)}. Retrying...")
-            time.sleep(5)
-            try:
-                redisClient = init_redis_client()
-            except Exception as e:
-                print(f"CRITICAL ERROR: Redis reinit failed: {e}", file=sys.stderr)
-                return {"statusCode": 500, "body": f"Redis failure: {e}"}
-
-    try:
-        request_body = json.loads(event.body)
-        collector_feedback_flag = request_body.get("collector_feedback_flag", False)
-        result_queue_name = request_body.get("result_queue_name")
-        output_queue_name = request_body.get("output_queue_name")
-        input_queue_name = request_body.get("input_queue_name")
-    except (json.JSONDecodeError, TypeError) as e:
-        return {"statusCode": 400, "body": f"Invalid or missing JSON in request body. {str(e)}"}
-
-    if not result_queue_name or not output_queue_name:
-        return {"statusCode": 400, "body": "Missing 'result_queue_name' or 'output_queue_name'."}
-
     total_tasks = 0
     tasks_met_deadline = 0
     last_emit_timestamp = None
 
     while True:
+        print("------------------------------")
+        print("[INFO] Starting new collector loop iteration...")
         try:
+            if redisClient is None:
+                try:
+                    redisClient = init_redis_client()
+                except redis.exceptions.ConnectionError as e:
+                    print(f"Redis init error: {str(e)}. Retrying...")
+                    time.sleep(5)
+                    try:
+                        redisClient = init_redis_client()
+                    except Exception as e:
+                        print(f"CRITICAL ERROR: Redis reinit failed: {e}", file=sys.stderr)
+                        return {"statusCode": 500, "body": f"Redis failure: {e}"}
+
+            try:
+                request_body = json.loads(event.body)
+                collector_feedback_flag = request_body.get("collector_feedback_flag", False)
+                result_queue_name = request_body.get("result_queue_name")
+                output_queue_name = request_body.get("output_queue_name")
+                input_queue_name = request_body.get("input_queue_name")
+            except (json.JSONDecodeError, TypeError) as e:
+                return {"statusCode": 400, "body": f"Invalid or missing JSON in request body. {str(e)}"}
+
+            if not result_queue_name or not output_queue_name:
+                return {"statusCode": 400, "body": "Missing 'result_queue_name' or 'output_queue_name'."}
+
             try:
                 raw_result = redisClient.lpop(result_queue_name)
             except redis.exceptions.ConnectionError as e:

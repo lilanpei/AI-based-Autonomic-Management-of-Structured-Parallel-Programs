@@ -21,39 +21,40 @@ def init_redis_client():
 def handle(event, context):
     print("!!!!!!!!!!!!! Emitter function invoked !!!!!!!!!!!!!")
     global redisClient
-
-    if redisClient is None:
-        try:
-            redisClient = init_redis_client()
-        except redis.exceptions.ConnectionError as e:
-            print(f"Redis connection error: {str(e)}. Attempting to reinitialize.")
-            time.sleep(5)
-            try:
-                redisClient = init_redis_client() # Reinitialize blocking client
-            except Exception as init_e:
-                print(f"CRITICAL ERROR: Redis reinit failed: {init_e}", file=sys.stderr)
-                return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
-
-    # Parse request body
-    try:
-        request_body = json.loads(event.body)
-        input_q_name = request_body.get('input_queue_name')
-        worker_q_name = request_body.get('worker_queue_name')
-    except (json.JSONDecodeError, TypeError):
-        print(f"ERROR: Invalid or non-JSON request body (truncated): '{str(event.body)[:512]}'", file=sys.stderr)
-        return {"statusCode": 400, "body": "Invalid or missing JSON in request body."}
-    except Exception as e:
-        print(f"ERROR: Unexpected error parsing request body: {e}", file=sys.stderr)
-        return {"statusCode": 500, "body": f"Internal error parsing request: {e}"}
-
-    if not input_q_name or not worker_q_name:
-        print("ERROR: 'input_queue_name' or 'worker_queue_name' not provided in request body.", file=sys.stderr)
-        return {"statusCode": 400, "body": "Missing 'input_queue_name' or 'worker_queue_name'."}
-
     tasks_generated_count = 0
 
     while True:
+        print("------------------------------")
+        print("[INFO] Starting new emitter loop iteration...")
         try:
+            if redisClient is None:
+                try:
+                    redisClient = init_redis_client()
+                except redis.exceptions.ConnectionError as e:
+                    print(f"Redis connection error: {str(e)}. Attempting to reinitialize.")
+                    time.sleep(5)
+                    try:
+                        redisClient = init_redis_client() # Reinitialize blocking client
+                    except Exception as init_e:
+                        print(f"CRITICAL ERROR: Redis reinit failed: {init_e}", file=sys.stderr)
+                        return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
+
+            # Parse request body
+            try:
+                request_body = json.loads(event.body)
+                input_q_name = request_body.get('input_queue_name')
+                worker_q_name = request_body.get('worker_queue_name')
+            except (json.JSONDecodeError, TypeError):
+                print(f"ERROR: Invalid or non-JSON request body (truncated): '{str(event.body)[:512]}'", file=sys.stderr)
+                return {"statusCode": 400, "body": "Invalid or missing JSON in request body."}
+            except Exception as e:
+                print(f"ERROR: Unexpected error parsing request body: {e}", file=sys.stderr)
+                return {"statusCode": 500, "body": f"Internal error parsing request: {e}"}
+
+            if not input_q_name or not worker_q_name:
+                print("ERROR: 'input_queue_name' or 'worker_queue_name' not provided in request body.", file=sys.stderr)
+                return {"statusCode": 400, "body": "Missing 'input_queue_name' or 'worker_queue_name'."}
+
             try:
                 pop_start = time.time()
                 raw_input_task = redisClient.lpop(input_q_name)

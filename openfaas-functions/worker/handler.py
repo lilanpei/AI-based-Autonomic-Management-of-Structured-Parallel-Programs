@@ -19,42 +19,43 @@ def init_redis_client():
 
 def handle(event, context):
     print("!!!!!!!!!!!!! Worker function invoked !!!!!!!!!!!!!")
-    worker_start_time = time.time()
     global redisClient
-
-    if redisClient is None:
-        try:
-            redisClient = init_redis_client()
-        except redis.exceptions.ConnectionError as e:
-            print(f"Redis init error: {str(e)}. Retrying...")
-            time.sleep(5)
-            try:
-                redisClient = init_redis_client()
-            except Exception as e:
-                print(f"CRITICAL ERROR: Redis reinit failed: {e}", file=sys.stderr)
-                return {"statusCode": 500, "body": f"Redis failure: {e}"}
-
-    # Parse request body
-    try:
-        request_body = json.loads(event.body)
-        start_flag = request_body.get('start_flag')
-        worker_q_name = request_body.get('worker_queue_name')
-        result_q_name = request_body.get('result_queue_name')
-        print(f"[INFO] Received request with start_flag={start_flag}, worker_queue_name='{worker_q_name}', result_queue_name='{result_q_name}'")
-    except (json.JSONDecodeError, TypeError):
-        return {"statusCode": 400, "body": "Invalid or missing JSON in request body."}
-
-    if not worker_q_name or not result_q_name or start_flag is None:
-        return {"statusCode": 400, "body": "Missing 'start_flag', 'worker_queue_name', or 'result_queue_name'."}
-
-    if not start_flag:
-        print("[INFO] start_flag is False. Worker will not run.")
-        return {"statusCode": 200, "body": "Worker exited as instructed (start_flag is False)."}
-
     tasks_processed = 0
 
     while True:
+        print("------------------------------")
+        print("[INFO] Starting new worker loop iteration...")
         try:
+            worker_start_time = time.time()
+            if redisClient is None:
+                try:
+                    redisClient = init_redis_client()
+                except redis.exceptions.ConnectionError as e:
+                    print(f"Redis init error: {str(e)}. Retrying...")
+                    time.sleep(5)
+                    try:
+                        redisClient = init_redis_client()
+                    except Exception as e:
+                        print(f"CRITICAL ERROR: Redis reinit failed: {e}", file=sys.stderr)
+                        return {"statusCode": 500, "body": f"Redis failure: {e}"}
+
+            # Parse request body
+            try:
+                request_body = json.loads(event.body)
+                start_flag = request_body.get('start_flag')
+                worker_q_name = request_body.get('worker_queue_name')
+                result_q_name = request_body.get('result_queue_name')
+                print(f"[INFO] Received request with start_flag={start_flag}, worker_queue_name='{worker_q_name}', result_queue_name='{result_q_name}'")
+            except (json.JSONDecodeError, TypeError):
+                return {"statusCode": 400, "body": "Invalid or missing JSON in request body."}
+
+            if not worker_q_name or not result_q_name or start_flag is None:
+                return {"statusCode": 400, "body": "Missing 'start_flag', 'worker_queue_name', or 'result_queue_name'."}
+
+            if not start_flag:
+                print("[INFO] start_flag is False. Worker will not run.")
+                return {"statusCode": 200, "body": "Worker exited as instructed (start_flag is False)."}
+
             try:
                 pop_start = time.time()
                 raw_task = redisClient.lpop(worker_q_name)
@@ -75,25 +76,26 @@ def handle(event, context):
             if raw_task is None:
                 print(f"[INFO] No tasks in queue '{worker_q_name}'. Reinvoking self...")
                 time.sleep(10)
+                continue  # No tasks to process, wait before checking again
 
-                payload = {
-                    "start_flag": True,
-                    "worker_queue_name": worker_q_name,
-                    "result_queue_name": result_q_name
-                }
+                # payload = {
+                #     "start_flag": True,
+                #     "worker_queue_name": worker_q_name,
+                #     "result_queue_name": result_q_name
+                # }
 
-                try:
-                    response = requests.post(
-                        "http://gateway.openfaas.svc.cluster.local:8080/async-function/worker",
-                        data=json.dumps(payload),
-                        headers={"Content-Type": "application/json"}
-                    )
-                    print(f"[INFO] Reinvoked worker - Status: {response.status_code}")
-                    print("Response Body:", response.text)
-                except requests.exceptions.RequestException as e:
-                    print(f"ERROR: Self-reinvoke failed: {e}", file=sys.stderr)
+                # try:
+                #     response = requests.post(
+                #         "http://gateway.openfaas.svc.cluster.local:8080/async-function/worker",
+                #         data=json.dumps(payload),
+                #         headers={"Content-Type": "application/json"}
+                #     )
+                #     print(f"[INFO] Reinvoked worker - Status: {response.status_code}")
+                #     print("Response Body:", response.text)
+                # except requests.exceptions.RequestException as e:
+                #     print(f"ERROR: Self-reinvoke failed: {e}", file=sys.stderr)
 
-                break  # Exit current loop after reinvoking
+                # break  # Exit current loop after reinvoking
 
             try:
                 task = json.loads(raw_task)
