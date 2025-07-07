@@ -19,6 +19,7 @@ def init_redis_client():
 
 def handle(event, context):
     print("!!!!!!!!!!!!! Worker function invoked !!!!!!!!!!!!!")
+    worker_start_time = time.time()
     global redisClient
 
     if redisClient is None:
@@ -53,7 +54,6 @@ def handle(event, context):
     tasks_processed = 0
 
     while True:
-        time.sleep(1)
         try:
             try:
                 pop_start = time.time()
@@ -99,6 +99,7 @@ def handle(event, context):
                 task = json.loads(raw_task)
                 task_id = task.get("id")
                 task_data = task.get("data")
+                task_size = task.get("size")
                 task_application = task.get("application")
                 task_deadline = task.get("deadline")
                 task_emit_timestamp = task.get("timestamp")
@@ -108,10 +109,24 @@ def handle(event, context):
                     raise ValueError(f"Unsupported task_application: {task_application}")
 
                 if not task_data or not isinstance(task_data, dict):
-                    raise ValueError("Invalid task_data format.")
+                    # Generate the two matrices for multiplication
+                    # Handle different task_size cases
+                    print(f"[INFO] Generating matrices for task ID: {task_id} with size: {task_size}")
+                    if isinstance(task_size, int):
+                        if task_size == 0:
+                            rows = cols = 10 # Default size if task_size is 0
+                        else:
+                            rows = cols = task_size
+                    else:
+                        rows = task_size[0]
+                        cols = task_size[1]
 
-                matrix_a = np.array(task_data.get("matrix_A"))
-                matrix_b = np.array(task_data.get("matrix_B"))
+                    # Generate matrices
+                    matrix_a = np.random.rand(rows, cols)
+                    matrix_b = np.random.rand(cols, rows)
+                else:
+                    matrix_a = np.array(task_data.get("matrix_A"))
+                    matrix_b = np.array(task_data.get("matrix_B"))
 
                 if matrix_a.shape[1] != matrix_b.shape[0]:
                     raise ValueError("Matrix dimensions incompatible for multiplication.")
@@ -120,19 +135,21 @@ def handle(event, context):
                 print(f"Task parsing or validation failed: {e}", file=sys.stderr)
                 continue
 
-            start_time = time.time()
             result_matrix = np.dot(matrix_a, matrix_b)
+            time.sleep(30)  # Simulate processing time
             end_time = time.time()
-            print(f"[INFO] Task ID: {task_id} completed in {end_time - start_time} seconds.")
+            print(f"[INFO] Task ID: {task_id} completed in {end_time - worker_start_time} seconds.")
 
             structured_result = {
                 "task_id": task_id,
-                "result_data": {"result_matrix":result_matrix.tolist()},  # Convert numpy array to list for JSON serialization
+                # "result_data": {"result_matrix":result_matrix.tolist()},  # Convert numpy array to list for JSON serialization
+                "result_data": None,  # Placeholder for result matrix
                 "task_application": task_application,
                 "task_emit_timestamp": task_emit_timestamp,
                 "task_deadline": task_deadline,
-                "output_size": result_matrix.size,
-                "complete_time": end_time - start_time,
+                "output_size": result_matrix.shape,
+                "emit_time": worker_start_time - task_emit_timestamp,
+                "complete_time": end_time - worker_start_time,
                 "complete_timestamp": end_time
             }
 
@@ -159,8 +176,7 @@ def handle(event, context):
 
         except Exception as e:
             print(f"ERROR: Unexpected error: {e}", file=sys.stderr)
-            time.sleep(5)
-            continue
+            break
 
     return {
         "statusCode": 200,

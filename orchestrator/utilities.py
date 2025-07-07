@@ -96,7 +96,7 @@ def clear_queues(self, redis_client, queue_names=None):
                 return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
 
 
-def scale_worker_deployment(replica_count, deployment_name="worker", namespace="openfaas-fn"):
+def scale_function_deployment(replica_count, deployment_name="worker", namespace="openfaas-fn"):
     """
     Scales the Kubernetes deployment to the desired number of replicas.
     """
@@ -170,3 +170,24 @@ def restart_function(function_name):
         print(f"[INFO] Restarted function: {function_name}")
     except subprocess.CalledProcessError as e:
         print(f"[ERROR] Failed to restart function '{function_name}': {e}")
+
+def get_current_worker_replicas(namespace="openfaas-fn", deployment_name="worker"):
+    config.load_kube_config()
+    apps_v1 = client.AppsV1Api()
+    deployment = apps_v1.read_namespaced_deployment(deployment_name, namespace)
+    return deployment.spec.replicas
+
+def send_control_requests(start_flag, count):
+    config_data = get_config()
+    worker_q = config_data["worker_queue_name"]
+    result_q = config_data["result_queue_name"]
+
+    for _ in range(count):
+        payload = {
+            "start_flag": start_flag,
+            "worker_queue_name": worker_q,
+            "result_queue_name": result_q
+        }
+        # simulate OpenFaaS function trigger
+        invoke_function_async("worker", payload)
+        print(f"[INFO] Sent control request with start_flag={start_flag}")

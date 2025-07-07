@@ -1,5 +1,5 @@
 import sys
-from utilities import get_config, scale_worker_deployment, invoke_function_async
+from utilities import get_config, scale_function_deployment, invoke_function_async
 
 def main():
     if len(sys.argv) != 3:
@@ -20,7 +20,7 @@ def main():
         sys.exit(1)
     start_flag = start_flag_input == "true"
 
-    scale_worker_deployment(replicas)
+    scale_function_deployment(replicas)
 
     config = get_config()
 

@@ -2,7 +2,7 @@ import sys
 import json
 import time
 from kubernetes import client, config
-from utilities import get_config, scale_worker_deployment, invoke_worker_function_concurrently
+from utilities import get_config, scale_function_deployment, send_control_requests, get_current_worker_replicas
 
 def parse_args():
     if len(sys.argv) != 2:
@@ -18,26 +18,6 @@ def parse_args():
 
     return int(delta)
 
-def get_current_worker_replicas(namespace="openfaas-fn", deployment_name="worker"):
-    config.load_kube_config()
-    apps_v1 = client.AppsV1Api()
-    deployment = apps_v1.read_namespaced_deployment(deployment_name, namespace)
-    return deployment.spec.replicas
-
-def send_control_requests(start_flag, count):
-    config_data = get_config()
-    worker_q = config_data["worker_queue_name"]
-    result_q = config_data["result_queue_name"]
-
-    for _ in range(count):
-        payload = {
-            "start_flag": start_flag,
-            "worker_queue_name": worker_q,
-            "result_queue_name": result_q
-        }
-        # simulate OpenFaaS function trigger
-        invoke_worker_function_concurrently(1)
-        print(f"[INFO] Sent control request with start_flag={start_flag}")
 
 def main():
     delta = parse_args()
@@ -50,25 +30,32 @@ def main():
     print(f"[INFO] Current replicas: {current_replicas}, New replicas: {new_replicas}")
     count = abs(delta)
     if delta > 0:
-        print(f"[INFO] Scaling up by {count} replicas...")
-        scale_worker_deployment(new_replicas)
+        print(f"[INFO] Trying to scale up by {count} replicas...")
+        scale_function_deployment(new_replicas)
         time.sleep(5)  # Allow time for the deployment to scale up
         print(f"[INFO] Invoking {new_replicas} workers to start processing tasks...")
         send_control_requests(True, count=new_replicas)
     else:
-        print(f"[INFO] Scaling down by {count} replicas...")
-        if new_replicas > 1:
+        print(f"[INFO] Trying to scale down by {count} replicas...")
+        if new_replicas > 0:
             print(f"[INFO] Sending {count} control requests to stop processing tasks...")
             send_control_requests(False, count=count)           
             time.sleep(10) # Allow time for the control requests to be processed
-            scale_worker_deployment(new_replicas)
+            scale_function_deployment(new_replicas)
         else:
-            print("[INFO] Already Scaled down to 1 replica, no further action needed.")
-    
+            if current_replicas == 1:
+                print("[INFO] Already at minimum replica count of 1, cannot scale down further.")
+            else:
+                print("[INFO] At least one replica remains, scaled down to 1 replica.")
+                count = current_replicas - 1 # Ensure at least one replica remains
+                send_control_requests(False, count=count)
+                time.sleep(10) # Allow time for the control requests to be processed
+                scale_function_deployment(1)
+
     print("[INFO] Waiting for the deployment to stabilize...")
     time.sleep(5)
     current_replicas = get_current_worker_replicas()
-    print(f"[INFO] Successfully scaled to {current_replicas} replicas.")
+    print(f"[INFO] Current worker replicas after scaling: {current_replicas}")
 
 if __name__ == "__main__":
     main()

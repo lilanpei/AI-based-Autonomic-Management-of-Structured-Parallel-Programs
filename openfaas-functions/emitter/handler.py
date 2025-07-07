@@ -53,7 +53,6 @@ def handle(event, context):
     tasks_generated_count = 0
 
     while True:
-        time.sleep(1)
         try:
             try:
                 pop_start = time.time()
@@ -133,8 +132,7 @@ def handle(event, context):
 
         except Exception as e:
             print(f"ERROR: Unexpected error during processing: {str(e)}", file=sys.stderr)
-            time.sleep(5)
-            continue # break
+            break
 
     return {
         "statusCode": 200,

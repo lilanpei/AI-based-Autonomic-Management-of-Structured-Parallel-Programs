@@ -4,7 +4,7 @@ import sys
 import time
 import redis
 import json
-from utilities import get_config, init_redis_client
+from utilities import get_config, init_redis_client, get_current_worker_replicas
 
 def run_script(script_name, args=[]):
     cmd = ["python", script_name] + [str(arg) for arg in args]
@@ -14,7 +14,7 @@ def run_script(script_name, args=[]):
         print(f"[ERROR] Script {script_name} failed.")
         sys.exit(1)
 
-def monitor_queues(interval=5):
+def monitor_queues(interval=10):
     config = get_config()
     QUEUE_NAMES = [
         config["input_queue_name"],
@@ -29,25 +29,35 @@ def monitor_queues(interval=5):
             print(f"Redis connection error: {str(e)}. Attempting to reinitialize.")
             time.sleep(5)
             try:
-                r = init_redis_client() # Reinitialize blocking client
+                r = init_redis_client()
             except Exception as init_e:
                 print(f"CRITICAL ERROR: Redis reinit failed: {init_e}", file=sys.stderr)
                 sys.exit(1)
+
         print("\n[INFO] Starting Redis queue monitoring...")
         while True:
+            print("------------------------------")
             print("\n[QUEUE STATUS]")
             for queue in QUEUE_NAMES:
                 length = r.llen(queue)
                 print(f"  {queue}: {length} items")
 
-            # Analyze output queue
-            output_length = r.llen("output_queue")
-            results = r.lrange("output_queue", 0, -1)
+            # Monitoring current worker replicas
+            try:
+                replicas = get_current_worker_replicas()
+                print(f"\n[WORKER STATUS]")
+                print(f"  Current worker replicas: {replicas}")
+            except Exception as e:
+                print(f"[WARNING] Could not retrieve worker replicas: {e}")
 
+            # Analyze output queue
+            results = r.lrange("output_queue", 0, -1)
             total_results = 0
             qos_exceed_count = 0
             total_compute_time = 0.0
             total_comm_time = 0.0
+            total_emit_time = 0.0
+            total_collect_time = 0.0
 
             for raw in results:
                 try:
@@ -55,16 +65,18 @@ def monitor_queues(interval=5):
                     total_results += 1
 
                     complete_time = result.get("complete_time", 0.0)
+                    emit_time = result.get("emit_time", 0.0)
+                    collect_time = result.get("collect_time", 0.0)
                     qos = result.get("QoS", False)
-                    emit_ts = result.get("task_emit_timestamp", 0.0)
-                    collect_ts = result.get("task_collect_timestamp", 0.0)
 
-                    comm_time = max(collect_ts - emit_ts - complete_time, 0.0)
+                    comm_time = emit_time + collect_time
 
                     if not qos:
                         qos_exceed_count += 1
                     total_compute_time += complete_time
                     total_comm_time += comm_time
+                    total_emit_time += emit_time
+                    total_collect_time += collect_time
 
                 except Exception as e:
                     print(f"[WARNING] Failed to parse result: {e}")
@@ -72,12 +84,16 @@ def monitor_queues(interval=5):
             if total_results > 0:
                 avg_compute_time = total_compute_time / total_results
                 avg_comm_time = total_comm_time / total_results
+                avg_emit_time = total_emit_time / total_results
+                avg_collect_time = total_collect_time / total_results
                 qos_percentage = (qos_exceed_count / total_results) * 100
 
                 print("\n[OUTPUT QUEUE ANALYSIS]")
                 print(f"  Total results       : {total_results}")
                 print(f"  QoS exceed count    : {qos_exceed_count} ({qos_percentage:.2f}%)")
                 print(f"  Avg compute time    : {avg_compute_time:.4f} sec")
+                print(f"  Avg emit time       : {avg_emit_time:.4f} sec")
+                print(f"  Avg collect time    : {avg_collect_time:.4f} sec")
                 print(f"  Avg communication   : {avg_comm_time:.4f} sec")
             else:
                 print("\n[OUTPUT QUEUE ANALYSIS] No results to analyze.")
@@ -95,7 +111,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Common startup
     run_script("env_init.py")
     time.sleep(10)  # Allow time for environment initialization
     run_script("emitter_init.py", ["True"])  # Start emitter with start_flag=True
