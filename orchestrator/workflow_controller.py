@@ -14,7 +14,7 @@ def run_script(script_name, args=[]):
         print(f"[ERROR] Script {script_name} failed.")
         sys.exit(1)
 
-def monitor_queues(interval=5):
+def monitor_queues(interval=5, total_tasks=1000, start_time=None, feedback_enabled=False):
     config = get_config()
     QUEUE_NAMES = [
         config["input_queue_name"],
@@ -22,6 +22,9 @@ def monitor_queues(interval=5):
         config["result_queue_name"],
         config["output_queue_name"]
     ]
+
+    end_time = None
+
     try:
         try:
             r = init_redis_client()
@@ -52,7 +55,12 @@ def monitor_queues(interval=5):
 
             # Analyze output queue
             results = r.lrange("output_queue", 0, -1)
-            total_results = 0
+            total_results = len(results)
+
+            # Monitor progress
+            progress_ratio = total_results / total_tasks
+            print(f"\n[PROGRESS] {total_results}/{total_tasks} tasks completed ({progress_ratio:.2%})")
+
             qos_exceed_count = 0
             total_compute_time = 0.0
             total_comm_time = 0.0
@@ -62,8 +70,6 @@ def monitor_queues(interval=5):
             for raw in results:
                 try:
                     result = json.loads(raw)
-                    total_results += 1
-
                     complete_time = result.get("complete_time", 0.0)
                     emit_time = result.get("emit_time", 0.0)
                     collect_time = result.get("collect_time", 0.0)
@@ -98,7 +104,20 @@ def monitor_queues(interval=5):
             else:
                 print("\n[OUTPUT QUEUE ANALYSIS] No results to analyze.")
 
+            # Measure total time when done
+            if total_results == total_tasks and start_time and end_time is None:
+                end_time = time.time()
+                duration = end_time - start_time
+                print(f"\n[TIMER] All {total_tasks} tasks completed.")
+                print(f"[TIMER] End time recorded at {time.ctime(end_time)}")
+                print(f"[TIMER] Total processing time: {duration:.2f} seconds")
+
+                if not feedback_enabled:
+                    print("[INFO] Feedback disabled. Terminating program.")
+                    sys.exit(0)
+
             time.sleep(interval)
+
     except KeyboardInterrupt:
         print("\n[INFO] Queue monitoring stopped by user.")
 
@@ -111,9 +130,13 @@ def main():
 
     args = parser.parse_args()
 
+    # Record program start time
+    program_start_time = time.time()
+    print(f"[TIMER] Program started at {time.ctime(program_start_time)}")
+
     run_script("env_init.py")
-    time.sleep(10)  # Allow time for environment initialization
-    run_script("emitter_init.py", ["True"])  # Start emitter with start_flag=True
+    time.sleep(10) # Allow time for environment initialization
+    run_script("emitter_init.py", ["True"]) # Start emitter with start_flag=True
 
     if args.mode == "pipeline":
         run_script("worker_init.py", ["1", "True"])
@@ -126,7 +149,7 @@ def main():
         run_script("task_generator.py", [str(args.tasks)])
 
     # Start Redis queue monitoring
-    monitor_queues()
+    monitor_queues(interval=5, total_tasks=args.tasks, start_time=program_start_time, feedback_enabled=args.feedback)
 
 if __name__ == "__main__":
     main()
