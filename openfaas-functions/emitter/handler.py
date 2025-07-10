@@ -4,6 +4,7 @@ import json
 import time
 import uuid
 import redis
+import requests
 
 redisClient = None
 
@@ -19,13 +20,20 @@ def init_redis_client():
 
 
 def handle(event, context):
-    print("!!!!!!!!!!!!! Emitter function invoked !!!!!!!!!!!!!")
+    print(f"!!!!!!!!!!!!! Emitter function invoked at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))} !!!!!!!!!!!!!")
     global redisClient
     tasks_generated_count = 0
+    iteration_end = None
 
     while True:
         print("------------------------------")
-        print("[INFO] Starting new emitter loop iteration...")
+        iteration_start = time.time()
+        print(f"[INFO] Emitter loop iteration started at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(iteration_start))}")
+
+        if iteration_end is not None:
+            gap_time = iteration_start - iteration_end
+            print(f"[INFO] Time gap since last iteration: {gap_time:.2f} seconds")
+
         try:
             if redisClient is None:
                 try:
@@ -57,26 +65,47 @@ def handle(event, context):
 
             try:
                 pop_start = time.time()
-                raw_input_task = redisClient.lpop(input_q_name)
+                raw_input_task = redisClient.rpop(input_q_name)
                 pop_time = time.time() - pop_start
-                print(f"[INFO] lpop from '{input_q_name}' took {pop_time} seconds.")
+                print(f"[INFO] rpop from '{input_q_name}' took {pop_time} seconds.")
             except redis.exceptions.ConnectionError as e:
-                print(f"Redis lpop connection error: {str(e)}. Attempting to reinitialize.")
+                print(f"Redis rpop connection error: {str(e)}. Attempting to reinitialize.")
                 time.sleep(5)
                 try:
                     redisClient = init_redis_client() # Reinitialize blocking client
                     retry_pop_start = time.time()
-                    raw_input_task = redisClient.lpop(input_q_name)
+                    raw_input_task = redisClient.rpop(input_q_name)
                     retry_pop_time = time.time() - retry_pop_start
-                    print(f"[INFO] Recovered: lpop from '{input_q_name}' took {retry_pop_time} seconds.")
+                    print(f"[INFO] Recovered: rpop from '{input_q_name}' took {retry_pop_time} seconds.")
                 except Exception as init_e:
-                    print(f"CRITICAL ERROR: Redis reinit and lpop failed: {init_e}", file=sys.stderr)
+                    print(f"CRITICAL ERROR: Redis reinit and rpop failed: {init_e}", file=sys.stderr)
                     return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
                 
             if raw_input_task is None:
                 print(f"[INFO] No more tasks in queue '{input_q_name}'. Waiting for new tasks...")
                 time.sleep(10)  # No tasks in queue, wait before checking again
-                continue
+                # continue
+                # Reinvoke self to check for new tasks
+                print(f"[INFO] Reinvoking self to check for new tasks in '{input_q_name}'...")
+                # Prepare payload for self-reinvoke
+                payload = {
+                    "start_flag": True,
+                    "input_queue_name": input_q_name,
+                    "worker_queue_name": worker_q_name,
+                }
+
+                try:
+                    response = requests.post(
+                        "http://gateway.openfaas.svc.cluster.local:8080/async-function/emitter",
+                        data=json.dumps(payload),
+                        headers={"Content-Type": "application/json"}
+                    )
+                    print(f"[INFO] Reinvoked emitter - Status: {response.status_code}")
+                    print("Response Body:", response.text)
+                except requests.exceptions.RequestException as e:
+                    print(f"ERROR: Self-reinvoke failed: {e}", file=sys.stderr)
+
+                break  # Exit current loop after reinvoking
 
             try:
                 input_task = json.loads(raw_input_task)
@@ -97,6 +126,7 @@ def handle(event, context):
                 continue # break
 
             new_task_id = str(uuid.uuid4())
+            print(f"[INFO] Generated new task ID: {new_task_id}")
             new_task_timestamp = time.time()
 
             structured_task = {
@@ -130,6 +160,9 @@ def handle(event, context):
 
             if tasks_generated_count % 100 == 0:
                 print(f"[INFO] Processed {tasks_generated_count} tasks so far...")
+
+            iteration_end = time.time()
+            print(f"[INFO] Emitter loop iteration completed in {iteration_end - iteration_start:.2f} seconds.")
 
         except Exception as e:
             print(f"ERROR: Unexpected error during processing: {str(e)}", file=sys.stderr)

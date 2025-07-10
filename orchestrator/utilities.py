@@ -72,7 +72,9 @@ def clear_queues(self, redis_client, queue_names=None):
             config["input_queue_name"],
             config["worker_queue_name"],
             config["result_queue_name"],
-            config["output_queue_name"]
+            config["output_queue_name"],
+            config["control_syn_queue_name"],
+            config["control_ack_queue_name"]
         ]
 
     if redis_client is None:
@@ -158,8 +160,37 @@ def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:
         return
 
     print(f"[INFO] Async invoked '{function_name}' function")
-    print(f"Status Code: {response.status_code}")
-    print("Response Body:", response.text)
+    # print(f"Status Code: {response.status_code}")
+    # print("Response Body:", response.text)
+
+# def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080", timeout=125):
+#     """
+#     Asynchronously invokes an OpenFaaS function using Python threading.
+#     Uses /function/<function_name> endpoint instead of /async-function.
+
+#     Args:
+#         function_name (str): OpenFaaS function name (e.g., "emitter", "collector", "worker")
+#         payload (dict): JSON-serializable data
+#         gateway_url (str): OpenFaaS gateway URL
+#         timeout (int): Timeout in seconds
+#     """
+
+#     def invoke():
+#         url = f"{gateway_url}/function/{function_name}"
+#         headers = {"Content-Type": "application/json"}
+
+#         try:
+#             response = requests.post(url, data=json.dumps(payload), headers=headers, timeout=timeout)
+#             response.raise_for_status()
+#             print(f"[INFO] Async invoked '{function_name}' function")
+#             print(f"Status Code: {response.status_code}")
+#             print("Response Body:", response.text)
+#         except requests.exceptions.RequestException as e:
+#             print(f"[ERROR] Failed to invoke '{function_name}': {e}", file=sys.stderr)
+
+#     thread = threading.Thread(target=invoke)
+#     thread.daemon = True  # Optional: allows program to exit even if thread is running
+#     thread.start()
 
 def restart_function(function_name):
     try:
@@ -177,17 +208,48 @@ def get_current_worker_replicas(namespace="openfaas-fn", deployment_name="worker
     deployment = apps_v1.read_namespaced_deployment(deployment_name, namespace)
     return deployment.spec.replicas
 
-def send_control_requests(start_flag, count):
-    config_data = get_config()
-    worker_q = config_data["worker_queue_name"]
-    result_q = config_data["result_queue_name"]
-
+def send_control_messages(redis_client, control_syn_q, count):
+    """ Sends control messages to the control queue for requesting worker fuction scale down.
+    Args:
+        redis_client (redis.Redis): Redis client instance.
+        control_syn_q (str): Name of the Redis queue for control SYN messages.
+        count (int): Number of control messages to send.
+    """
     for _ in range(count):
-        payload = {
-            "start_flag": start_flag,
-            "worker_queue_name": worker_q,
-            "result_queue_name": result_q
+        control_message = {
+            "type": "SCALE_DOWN",  # Type of control message
+            "action": "SYN",  # Action to stop the worker
+            "message": "Scale down request from orchestrator",
+            "SYN_timestamp": time.time()
         }
-        # simulate OpenFaaS function trigger
-        invoke_function_async("worker", payload)
-        print(f"[INFO] Sent control request with start_flag={start_flag}")
+        try:
+            redis_client.lpush(control_syn_q, json.dumps(control_message))
+            print(f"[INFO] Sent control message to '{control_syn_q}'")
+        except redis.exceptions.ConnectionError as e:
+            print(f"Redis connection error: {str(e)}. Attempting to reinitialize.")
+            time.sleep(5)
+            try:
+                redis_client = init_redis_client()  # Reinitialize blocking client
+                redis_client.lpush(control_syn_q, json.dumps(control_message))
+                print(f"[INFO] Recovered: Sent control message to '{control_syn_q}'")
+            except Exception as init_e:
+                print(f"CRITICAL ERROR: Redis reinit and lpush failed: {init_e}", file=sys.stderr)
+                return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
+
+def delete_pod_by_name(pod_name, namespace="openfaas-fn"):
+    # Load kubeconfig (default location: ~/.kube/config)
+    config.load_kube_config()
+
+    # Create CoreV1Api client
+    v1 = client.CoreV1Api()
+
+    try:
+        # Delete the pod by name
+        v1.delete_namespaced_pod(
+            name=pod_name,
+            namespace=namespace,
+            body=client.V1DeleteOptions()  # Optional: grace_period_seconds, propagation_policy
+        )
+        print(f"[INFO] Pod {pod_name} deleted successfully.")
+    except client.exceptions.ApiException as e:
+        print(f"[INFO] Failed to delete pod: {e}")

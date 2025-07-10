@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import redis
+import requests
 import numpy as np
 
 redisClient = None
@@ -17,14 +18,21 @@ def init_redis_client():
     )
 
 def handle(event, context):
-    print("!!!!!!!!!!!!! Collector function invoked !!!!!!!!!!!!!")
+    print(f"!!!!!!!!!!!!! Collector function invoked at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))} !!!!!!!!!!!!!")
     global redisClient
     total_tasks = 0
     tasks_met_deadline = 0
+    iteration_end = None
 
     while True:
         print("------------------------------")
-        print("[INFO] Starting new collector loop iteration...")
+        iteration_start = time.time()
+        print(f"[INFO] Collector loop iteration started at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(iteration_start))}")
+
+        if iteration_end is not None:
+            gap_time = iteration_start - iteration_end
+            print(f"[INFO] Time gap since last iteration: {gap_time:.2f} seconds")
+
         try:
             if redisClient is None:
                 try:
@@ -51,11 +59,34 @@ def handle(event, context):
             if queue_length == 0:
                 print(f"[INFO] Result queue '{result_queue_name}' is empty. Waiting...")
                 time.sleep(10)
-                continue
+                # continue
+                # Reinvoke self to check for new results
+                print(f"[INFO] Reinvoking self to check for new results in '{result_queue_name}'...")
+                # Prepare payload for self-reinvoke
+                payload = {
+                    "start_flag": True,
+                    "collector_feedback_flag": collector_feedback_flag,
+                    "input_queue_name": input_queue_name,
+                    "result_queue_name": result_queue_name,
+                    "output_queue_name": output_queue_name
+                }
+
+                try:
+                    response = requests.post(
+                        "http://gateway.openfaas.svc.cluster.local:8080/async-function/collector",
+                        data=json.dumps(payload),
+                        headers={"Content-Type": "application/json"}
+                    )
+                    print(f"[INFO] Reinvoked collector - Status: {response.status_code}")
+                    print("Response Body:", response.text)
+                except requests.exceptions.RequestException as e:
+                    print(f"ERROR: Self-reinvoke failed: {e}", file=sys.stderr)
+
+                break  # Exit current loop after reinvoking
 
             raw_results = []
             for _ in range(queue_length):
-                raw = redisClient.lpop(result_queue_name)
+                raw = redisClient.rpop(result_queue_name)
                 if raw:
                     try:
                         result = json.loads(raw)
@@ -132,6 +163,9 @@ def handle(event, context):
                         time.sleep(5)
                         redisClient = init_redis_client()
                         redisClient.lpush(input_queue_name, json.dumps(new_task))
+
+            iteration_end = time.time()
+            print(f"[INFO] Collector loop iteration completed in {iteration_end - iteration_start:.2f} seconds.")
 
         except Exception as e:
             print(f"[ERROR] Unexpected error: {e}", file=sys.stderr)

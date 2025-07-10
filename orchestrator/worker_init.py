@@ -27,9 +27,12 @@ def main():
     payload = {
         "start_flag": start_flag,
         "worker_queue_name": config["worker_queue_name"],
-        "result_queue_name": config["result_queue_name"]
+        "result_queue_name": config["result_queue_name"],
+        "control_syn_queue_name": config["control_syn_queue_name"],
+        "control_ack_queue_name": config["control_ack_queue_name"],
     }
-
+    print(f"[INFO] Scaling worker to {replicas} replicas with start_flag={start_flag}")
+    print(f"[INFO] Payload for worker: {payload}")
     for i in range(replicas):
         invoke_function_async("worker", payload)
 

@@ -22,7 +22,9 @@ def monitor_queues(interval=5, total_tasks=1000, start_time=None, feedback_enabl
         config["input_queue_name"],
         config["worker_queue_name"],
         config["result_queue_name"],
-        config["output_queue_name"]
+        config["output_queue_name"],
+        config["control_syn_queue_name"],
+        config["control_ack_queue_name"]
     ]
 
     end_time = None
@@ -37,7 +39,7 @@ def monitor_queues(interval=5, total_tasks=1000, start_time=None, feedback_enabl
 
         print("\n[INFO] Starting Redis queue monitoring...")
         while True:
-            print("------------------------------")
+            print(f"---------------{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}---------------")
             print("\n[QUEUE STATUS]")
             for queue in QUEUE_NAMES:
                 length = r.llen(queue)
@@ -142,7 +144,7 @@ def main():
     # Step 1: Initialize environment
     run_script("env_init.py")
 
-    # Step 2: Give time for Redis/infra to settle
+    # Step 2: Give time for env to settle
     time.sleep(10)
 
     # Step 3: Start task generator asynchronously

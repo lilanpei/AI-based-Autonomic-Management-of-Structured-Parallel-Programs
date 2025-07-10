@@ -2,3 +2,4 @@
 openfaas-functions/build/
 openfaas-functions/template/
 orchestrator/__pycache__/
+orchestrator/logs_farm/

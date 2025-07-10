@@ -4,3 +4,5 @@ input_queue_name: input_queue
 worker_queue_name: worker_queue
 result_queue_name: result_queue
 output_queue_name: output_queue
+control_syn_queue_name: control_syn_queue
+control_ack_queue_name: control_ack_queue
