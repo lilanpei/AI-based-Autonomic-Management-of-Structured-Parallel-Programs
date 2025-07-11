@@ -253,3 +253,9 @@ def delete_pod_by_name(pod_name, namespace="openfaas-fn"):
         print(f"[INFO] Pod {pod_name} deleted successfully.")
     except client.exceptions.ApiException as e:
         print(f"[INFO] Failed to delete pod: {e}")
+
+def get_worker_pod_names(namespace="openfaas-fn", label_selector="faas_function=worker"):
+    config.load_kube_config()
+    v1 = client.CoreV1Api()
+    pods = v1.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
+    return [pod.metadata.name for pod in pods.items]
