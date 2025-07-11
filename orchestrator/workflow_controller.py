@@ -9,14 +9,124 @@ from utilities import get_config, init_redis_client, get_current_worker_replicas
 
 def run_script(script_name, args=[]):
     """
-    Always runs the script asynchronously in the background.
+    Asynchronously runs the specified script with the provided arguments.
+
+    Args:
+        script_name (str): The script to run.
+        args (list): List of arguments to pass to the script.
     """
     cmd = ["python", script_name] + [str(arg) for arg in args]
     print(f"[ASYNC RUNNING] {' '.join(cmd)}")
     subprocess.Popen(cmd)
 
 
+def init_redis_client_with_retry():
+    """
+    Initializes the Redis client with retry logic.
+
+    Returns:
+        redis.Redis: A Redis client instance.
+
+    Raises:
+        Exception: If Redis cannot be connected after retries.
+    """
+    try:
+        return init_redis_client()
+    except redis.exceptions.ConnectionError as e:
+        print(f"[ERROR] Redis connection error: {str(e)}. Retrying...")
+        time.sleep(5)
+        return init_redis_client()
+
+
+def monitor_worker_replicas():
+    """
+    Monitors the current number of worker replicas.
+    """
+    try:
+        replicas = get_current_worker_replicas()
+        print(f"\n[WORKER STATUS]")
+        print(f"  Current worker replicas: {replicas}")
+    except Exception as e:
+        print(f"[WARNING] Could not retrieve worker replicas: {e}")
+
+
+def analyze_output_queue(redis_client, total_tasks):
+    """
+    Analyzes the output queue in Redis, calculating statistics such as task completion times and QoS performance.
+
+    Args:
+        redis_client (redis.Redis): The Redis client.
+        total_tasks (int): The total number of tasks expected.
+
+    Returns:
+        total_results (int): The total number of completed tasks in the output queue.
+    """
+    results = redis_client.lrange("output_queue", 0, -1)
+    total_results = len(results)
+
+    print(f"\n[PROGRESS] {total_results}/{total_tasks} tasks completed ({(total_results / total_tasks):.2%})")
+
+    if total_results == 0:
+        print("\n[OUTPUT QUEUE ANALYSIS] No results to analyze.")
+        return total_results
+
+    qos_exceed_count = 0
+    total_compute_time = 0.0
+    total_comm_time = 0.0
+    total_emit_time = 0.0
+    total_collect_time = 0.0
+
+    for index, raw in enumerate(results):
+        try:
+            result = json.loads(raw)
+            task_id = result.get("task_id")
+            emit_time = result.get("emit_time", 0.0)
+            collect_time = result.get("collect_time", 0.0)
+            complete_time = result.get("complete_time", 0.0)
+
+            comm_time = emit_time + collect_time
+
+            print(f"[INFO] Result {index} (task_id: {task_id}):")
+            print(f"  Emit Time    : {emit_time}")
+            print(f"  Collect Time : {collect_time}")
+            print(f"  Compute Time : {complete_time}")
+            print(f"[DEBUG] result: {result}")
+            if not result.get("QoS", False):
+                qos_exceed_count += 1
+            total_compute_time += complete_time
+            total_comm_time += comm_time
+            total_emit_time += emit_time
+            total_collect_time += collect_time
+        except Exception as e:
+            print(f"[WARNING] Failed to parse result: {e}")
+
+    avg_compute_time = total_compute_time / total_results
+    avg_comm_time = total_comm_time / total_results
+    avg_emit_time = total_emit_time / total_results
+    avg_collect_time = total_collect_time / total_results
+    qos_percentage = (qos_exceed_count / total_results) * 100
+
+    print("\n[OUTPUT QUEUE ANALYSIS]")
+    print(f"  Total Results       : {total_results}")
+    print(f"  QoS Exceed Count    : {qos_exceed_count} ({qos_percentage:.2f}%)")
+    print(f"  Avg Compute Time    : {avg_compute_time:.4f} sec")
+    print(f"  Avg Emit Time       : {avg_emit_time:.4f} sec")
+    print(f"  Avg Collect Time    : {avg_collect_time:.4f} sec")
+    print(f"  Avg Communication   : {avg_comm_time:.4f} sec")
+
+    return total_results
+
+
 def monitor_queues(interval=5, total_tasks=1000, start_time=None, feedback_enabled=False):
+    """
+    Monitors Redis queues and provides periodic status updates on task progress.
+
+    Args:
+        interval (int): The interval in seconds to wait between checks.
+        total_tasks (int): The total number of tasks to be completed.
+        start_time (float): The start time of task execution.
+        feedback_enabled (bool): Flag indicating whether feedback is enabled.
+    """
     config = get_config()
     QUEUE_NAMES = [
         config["input_queue_name"],
@@ -27,105 +137,35 @@ def monitor_queues(interval=5, total_tasks=1000, start_time=None, feedback_enabl
         config["control_ack_queue_name"]
     ]
 
+    redis_client = init_redis_client_with_retry()
+
+    print("\n[INFO] Starting Redis queue monitoring...")
+
     end_time = None
 
-    try:
-        try:
-            r = init_redis_client()
-        except redis.exceptions.ConnectionError as e:
-            print(f"Redis connection error: {str(e)}. Attempting to reinitialize.")
-            time.sleep(5)
-            r = init_redis_client()
+    while True:
+        print(f"---------------{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}---------------")
+        print("\n[QUEUE STATUS]")
+        for queue in QUEUE_NAMES:
+            length = redis_client.llen(queue)
+            print(f"  {queue}: {length} items")
 
-        print("\n[INFO] Starting Redis queue monitoring...")
-        while True:
-            print(f"---------------{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}---------------")
-            print("\n[QUEUE STATUS]")
-            for queue in QUEUE_NAMES:
-                length = r.llen(queue)
-                print(f"  {queue}: {length} items")
+        monitor_worker_replicas()
 
-            # Monitoring worker replicas
-            try:
-                replicas = get_current_worker_replicas()
-                print(f"\n[WORKER STATUS]")
-                print(f"  Current worker replicas: {replicas}")
-            except Exception as e:
-                print(f"[WARNING] Could not retrieve worker replicas: {e}")
+        total_results = analyze_output_queue(redis_client, total_tasks)
 
-            # Analyze output queue
-            results = r.lrange("output_queue", 0, -1)
-            total_results = len(results)
+        if total_results == total_tasks and start_time and end_time is None:
+            end_time = time.time()
+            duration = end_time - start_time
+            print(f"\n[TIMER] All {total_tasks} tasks completed.")
+            print(f"[TIMER] End time recorded at {time.ctime(end_time)}")
+            print(f"[TIMER] Total processing time: {duration:.2f} seconds")
 
-            # Progress monitoring
-            progress_ratio = total_results / total_tasks
-            print(f"\n[PROGRESS] {total_results}/{total_tasks} tasks completed ({progress_ratio:.2%})")
+            if not feedback_enabled:
+                print("[INFO] Feedback disabled. Terminating program.")
+                sys.exit(0)
 
-            # Output result analysis
-            qos_exceed_count = 0
-            total_compute_time = 0.0
-            total_comm_time = 0.0
-            total_emit_time = 0.0
-            total_collect_time = 0.0
-            index = 0
-
-            for raw in results:
-                try:
-                    result = json.loads(raw)
-                    complete_time = result.get("complete_time", 0.0)
-                    emit_time = result.get("emit_time", 0.0)
-                    collect_time = result.get("collect_time", 0.0)
-                    task_id = result.get("task_id")
-
-                    print(f"[INFO] Result {index} (task_id: {task_id}):")
-                    print(f"  Emit Time    : {emit_time}")
-                    print(f"  Collect Time : {collect_time}")
-                    print(f"  Compute Time : {complete_time}")
-
-                    comm_time = emit_time + collect_time
-
-                    if not result.get("QoS", False):
-                        qos_exceed_count += 1
-                    total_compute_time += complete_time
-                    total_comm_time += comm_time
-                    total_emit_time += emit_time
-                    total_collect_time += collect_time
-                    index += 1
-                except Exception as e:
-                    print(f"[WARNING] Failed to parse result: {e}")
-
-            if total_results > 0:
-                avg_compute_time = total_compute_time / total_results
-                avg_comm_time = total_comm_time / total_results
-                avg_emit_time = total_emit_time / total_results
-                avg_collect_time = total_collect_time / total_results
-                qos_percentage = (qos_exceed_count / total_results) * 100
-
-                print("\n[OUTPUT QUEUE ANALYSIS]")
-                print(f"  Total Results       : {total_results}")
-                print(f"  QoS Exceed Count    : {qos_exceed_count} ({qos_percentage:.2f}%)")
-                print(f"  Avg Compute Time    : {avg_compute_time:.4f} sec")
-                print(f"  Avg Emit Time       : {avg_emit_time:.4f} sec")
-                print(f"  Avg Collect Time    : {avg_collect_time:.4f} sec")
-                print(f"  Avg Communication   : {avg_comm_time:.4f} sec")
-            else:
-                print("\n[OUTPUT QUEUE ANALYSIS] No results to analyze.")
-
-            if total_results == total_tasks and start_time and end_time is None:
-                end_time = time.time()
-                duration = end_time - start_time
-                print(f"\n[TIMER] All {total_tasks} tasks completed.")
-                print(f"[TIMER] End time recorded at {time.ctime(end_time)}")
-                print(f"[TIMER] Total processing time: {duration:.2f} seconds")
-
-                if not feedback_enabled:
-                    print("[INFO] Feedback disabled. Terminating program.")
-                    sys.exit(0)
-
-            time.sleep(interval)
-
-    except KeyboardInterrupt:
-        print("\n[INFO] Queue monitoring stopped by user.")
+        time.sleep(interval)
 
 
 def main():
@@ -151,15 +191,15 @@ def main():
     run_script("task_generator.py", [str(args.tasks)])
 
     # Step 4: Start emitter
-    run_script("emitter_init.py", ["True"])
+    run_script("emitter_init.py")
 
     # Step 5: Start workers and collector based on mode
     if args.mode == "pipeline":
-        run_script("worker_init.py", ["1", "True"])
-        run_script("collector_init.py", ["True", "True" if args.feedback else "False"])
+        run_script("worker_init.py", ["1"])
+        run_script("collector_init.py", ["True" if args.feedback else "False"])
     elif args.mode == "farm":
-        run_script("worker_init.py", [str(args.workers), "True"])
-        run_script("collector_init.py", ["True", "True" if args.feedback else "False"])
+        run_script("worker_init.py", [str(args.workers)])
+        run_script("collector_init.py", ["True" if args.feedback else "False"])
 
     # Step 6: Begin monitoring queues
     monitor_queues(interval=5, total_tasks=args.tasks, start_time=program_start_time, feedback_enabled=args.feedback)

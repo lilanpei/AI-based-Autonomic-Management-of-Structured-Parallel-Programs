@@ -12,19 +12,114 @@ from utilities import (
     get_worker_pod_names
 )
 
+
+VALID_DELTAS = {"+2", "+1", "0", "-1", "-2"}
+
+
 def parse_args():
+    """
+    Parses and validates CLI arguments.
+    """
     if len(sys.argv) != 2:
         print("Usage: python worker_scaler.py <scale_delta>")
         print("Example: python worker_scaler.py +1")
         sys.exit(1)
 
-    delta = sys.argv[1]
+    delta_str = sys.argv[1]
 
-    if delta not in ["+2", "+1", "0", "-1", "-2"]:
+    if delta_str not in VALID_DELTAS:
         print("ERROR: scale_delta must be one of +2, +1, 0, -1, -2")
         sys.exit(1)
 
-    return int(delta)
+    return int(delta_str)
+
+
+def get_redis_client_with_retry(retries=3, delay=5):
+    """
+    Attempts to connect to Redis with retry logic.
+    """
+    for attempt in range(retries):
+        try:
+            return init_redis_client()
+        except Exception as e:
+            print(f"[ERROR] Redis connection failed (Attempt {attempt + 1}/{retries}): {e}")
+            time.sleep(delay)
+    print("[FATAL] Could not connect to Redis after multiple attempts.")
+    sys.exit(1)
+
+
+def scale_up(current, delta, payload):
+    """
+    Scales up worker pods and deploys new functions.
+    """
+    new_replicas = current + delta
+    print(f"[INFO] Scaling up from {current} to {new_replicas} replicas...")
+    scale_function_deployment(new_replicas)
+    time.sleep(5)
+
+    for _ in range(new_replicas):
+        invoke_function_async("worker", payload)
+
+
+def scale_down(current, delta, config, payload):
+    """
+    Scales down worker pods using control messages and ACKs.
+    """
+    redis_client = get_redis_client_with_retry()
+    control_syn_q = config["control_syn_queue_name"]
+    control_ack_q = config["control_ack_queue_name"]
+
+    new_replicas = max(current + delta, 1)
+    count = current - new_replicas
+
+    print(f"[INFO] Preparing to scale down from {current} to {new_replicas} replicas...")
+    print(f"[INFO] Sending {count} control requests...")
+
+    # Ensure workers are listening
+    for _ in range(current):
+        invoke_function_async("worker", payload)
+    time.sleep(5)
+
+    # Send SCALE_DOWN control messages
+    send_control_messages(redis_client, control_syn_q, count)
+
+    # Wait for ACKs
+    acked_pods = []
+    while len(acked_pods) < count:
+        print(f"[INFO] Waiting for ACKs... {len(acked_pods)}/{count}")
+        msg_raw = redis_client.rpop(control_ack_q)
+        if not msg_raw:
+            time.sleep(5)
+            continue
+
+        try:
+            msg = json.loads(msg_raw)
+            if msg.get("type") == "SCALE_DOWN" and msg.get("action") == "ACK":
+                pod_name = msg.get("pod_name")
+                acked_pods.append(pod_name)
+                print(f"[INFO] ACK received from pod: {pod_name}")
+        except Exception as e:
+            print(f"[WARNING] Malformed ACK message: {e}")
+
+    # Delete ACKed pods
+    print("[INFO] Deleting ACKed pods...")
+    for pod in acked_pods:
+        delete_pod_by_name(pod)
+
+    # Scale the function deployment down
+    print(f"[INFO] Scaling deployment to {new_replicas} replicas...")
+    scale_function_deployment(new_replicas)
+    time.sleep(3)
+
+    # Check pod consistency
+    remaining_pods = set(get_worker_pod_names())
+    for pod in acked_pods:
+        if pod in remaining_pods:
+            print(f"[ERROR] Pod '{pod}' was not deleted as expected!")
+    for pod in remaining_pods:
+        if pod not in acked_pods:
+            print(f"[OK] Pod '{pod}' preserved.")
+
 
 def main():
     delta = parse_args()
@@ -41,89 +136,23 @@ def main():
         "control_syn_queue_name": config["control_syn_queue_name"],
         "control_ack_queue_name": config["control_ack_queue_name"]
     }
+
     current_replicas = get_current_worker_replicas()
-    new_replicas = max(current_replicas + delta, 0)
-    print(f"[INFO] Current replicas: {current_replicas}, New replicas: {new_replicas}")
-    count = abs(delta)
+    print(f"[INFO] Current replicas: {current_replicas}")
 
     if delta > 0:
-        print(f"[INFO] Scaling up by {count} replicas...")
-        scale_function_deployment(new_replicas)
-        time.sleep(5)
-
-        for _ in range(new_replicas):
-            invoke_function_async("worker", payload)
-
+        scale_up(current_replicas, delta, payload)
     else:
-        print(f"[INFO] Scaling down by {count} replicas...")
-        control_syn_q = config["control_syn_queue_name"]
-        control_ack_q = config["control_ack_queue_name"]
-
-        try:
-            redis_client = init_redis_client()
-        except Exception as e:
-            print(f"[ERROR] Redis connection error: {e}")
-            time.sleep(5)
-            redis_client = init_redis_client()
-
-        if current_replicas > 1:
-            if new_replicas < 1:
-                print("[INFO] Forcing at least 1 replica to remain.")
-                count = current_replicas - 1
-                new_replicas = 1
-            print(f"[INFO] Sending {count} control requests to stop processing tasks...")
-
-            for _ in range(current_replicas):
-                invoke_function_async("worker", payload)
-
-            time.sleep(5)
-            send_control_messages(redis_client, control_syn_q, count)
-
-            acked_pods = []
-            while len(acked_pods) < count:
-                print(f"[INFO] Waiting for ACKs... {len(acked_pods)}/{count}")
-                msg_raw = redis_client.rpop(control_ack_q)
-                if not msg_raw:
-                    time.sleep(5)
-                    continue
-
-                msg = json.loads(msg_raw)
-                if msg.get("type") == "SCALE_DOWN" and msg.get("action") == "ACK":
-                    pod_name = msg.get("pod_name")
-                    acked_pods.append(pod_name)
-                    print(f"[INFO] ACK received from pod {pod_name}")
-
-            all_pods_before = set(get_worker_pod_names())
-            to_keep = list(all_pods_before - set(acked_pods))
-
-            print("[INFO] Deleting ACKed pods...")
-            for pod in acked_pods:
-                delete_pod_by_name(pod)
-
-            # time.sleep(5)
-
-            print(f"[INFO] Scaling deployment down to {new_replicas}...")
-            scale_function_deployment(new_replicas)
-
-            time.sleep(3)
-            all_pods_after = set(get_worker_pod_names())
-
-            for pod in to_keep:
-                if pod in all_pods_after:
-                    print(f"[OK] Pod '{pod}' preserved.")
-                else:
-                    print(f"[ERROR] Pod '{pod}' was unintentionally lost!")
-
-            for pod in acked_pods:
-                if pod in all_pods_after:
-                    print(f"[ERROR] Deleted pod '{pod}' still exists! Check scaling logic.")
-
-        else:
+        if current_replicas <= 1:
             print("[INFO] Only one replica present; cannot scale down further.")
+        else:
+            scale_down(current_replicas, delta, config, payload)
 
     print("[INFO] Finalizing scaling...")
     time.sleep(5)
-    print(f"[INFO] Replicas now: {get_current_worker_replicas()}")
+    final_count = get_current_worker_replicas()
+    print(f"[INFO] Replicas now: {final_count}")
+
 
 if __name__ == "__main__":
     main()

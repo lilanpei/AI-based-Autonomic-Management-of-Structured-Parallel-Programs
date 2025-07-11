@@ -1,38 +1,36 @@
 import sys
 from utilities import get_config, scale_function_deployment, invoke_function_async
 
-def main():
-    if len(sys.argv) != 3:
-        print("Usage: python worker_init.py <replica_count> <start_flag: True|False>")
-        sys.exit(1)
-
+def parse_replicas(arg: str) -> int:
+    """Parse and validate the replica count."""
     try:
-        replicas = int(sys.argv[1])
+        replicas = int(arg)
         if replicas <= 0:
-            raise ValueError("Replica count must be greater than zero.")
+            raise ValueError()
+        return replicas
     except ValueError:
-        print("ERROR: Invalid replica count. Must be a positive integer.")
+        print("ERROR: <replica_count> must be a positive integer.")
         sys.exit(1)
 
-    start_flag_input = sys.argv[2].lower()
-    if start_flag_input not in ("true", "false"):
-        print("ERROR: start_flag must be 'True' or 'False'.")
+def main():
+    if len(sys.argv) != 2:
+        print("Usage: python worker_init.py <replica_count>")
         sys.exit(1)
-    start_flag = start_flag_input == "true"
 
+    replicas = parse_replicas(sys.argv[1])
+
+    print(f"[INFO] Scaling worker function to {replicas} replicas...")
     scale_function_deployment(replicas)
 
     config = get_config()
-
     payload = {
-        "start_flag": start_flag,
         "worker_queue_name": config["worker_queue_name"],
         "result_queue_name": config["result_queue_name"],
         "control_syn_queue_name": config["control_syn_queue_name"],
         "control_ack_queue_name": config["control_ack_queue_name"],
     }
-    print(f"[INFO] Scaling worker to {replicas} replicas with start_flag={start_flag}")
-    print(f"[INFO] Payload for worker: {payload}")
+
+    print(f"[INFO] Invoking {replicas} worker function(s) with payload: {payload}")
     for i in range(replicas):
         invoke_function_async("worker", payload)
 

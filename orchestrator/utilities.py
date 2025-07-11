@@ -1,260 +1,170 @@
 import os
 import sys
+import time
 import yaml
 import json
-import time
 import redis
 import requests
-import threading
 import subprocess
 import numpy as np
+from threading import Thread
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
-_config = None # Private variable to hold loaded configuration
+# Module-level cache for configuration
+_config = None
 
 def get_config():
-    """Loads configuration from configuration.yml."""
+    """Load configuration from configuration.yml once."""
     global _config
-    if _config is None:
-        try:
-            # Assuming configuration.yml is in the same directory as utilities.py
-            script_dir = os.path.dirname(__file__)
-            config_path = os.path.join(script_dir, 'configuration.yml')
-            with open(config_path, 'r') as f:
-                _config = yaml.safe_load(f)
-            print("Configuration loaded successfully from configuration.yml")
-        except FileNotFoundError:
-            print(f"ERROR: configuration.yml not found at {config_path}. Please ensure it's in the same directory as utilities.py.", file=sys.stderr)
-            sys.exit(1)
-        except yaml.YAMLError as e:
-            print(f"ERROR: Error parsing configuration.yml: {e}", file=sys.stderr)
-            sys.exit(1)
-    return _config
+    if _config is not None:
+        return _config
 
+    script_dir = os.path.dirname(__file__)
+    config_path = os.path.join(script_dir, 'configuration.yml')
+    try:
+        with open(config_path, 'r') as f:
+            _config = yaml.safe_load(f)
+        print("[INFO] Configuration loaded successfully")
+    except FileNotFoundError:
+        print(f"[ERROR] configuration.yml not found at {config_path}", file=sys.stderr)
+        sys.exit(1)
+    except yaml.YAMLError as e:
+        print(f"[ERROR] Error parsing configuration.yml: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    return _config
 
 def init_redis_client():
     """
-    Initializes and returns a synchronous Redis client using configuration.
-    It reads hostname and port from environment variables (REDIS_HOSTNAME, REDIS_PORT)
-    or falls back to configuration.yml settings. Exits if connection fails.
+    Initialize Redis client using environment or fallback config.
     """
-    config = get_config()
-    redis_settings = config.get('redis', {}) # Get the 'redis' section from config.yml
-    
-    # Get hostname, prioritizing REDIS_HOSTNAME env var, then config's hostname, then default 'localhost'
-    redis_hostname = os.getenv('REDIS_HOSTNAME', redis_settings.get('hostname', 'localhost'))
-    
-    # Get port, prioritizing REDIS_PORT env var, then config's port, then default 6379.
-    # Convert port from config to string for os.getenv default, then to int for redis.Redis.
-    redis_port = int(os.getenv('REDIS_PORT', str(redis_settings.get('port', 6379))))
+    config = get_config().get('redis', {})
+    host = os.getenv('REDIS_HOSTNAME', config.get('hostname', 'localhost'))
+    port = int(os.getenv('REDIS_PORT', config.get('port', 6379)))
 
-    return redis.Redis(
-        host=redis_hostname,
-        port=redis_port,
-        decode_responses=True
-    )
+    try:
+        return redis.Redis(host=host, port=port, decode_responses=True)
+    except redis.exceptions.RedisError as e:
+        print(f"[ERROR] Redis initialization failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
 def generate_matrix(size):
-    """
-    Generates a square matrix of given size with random float values.
-    Returns the matrix as a nested Python list (suitable for JSON serialization).
-    """
+    """Generate a square matrix of random floats."""
     return np.random.rand(size, size).tolist()
 
-def clear_queues(self, redis_client, queue_names=None):
-    """Clears specified Redis queues and the results set."""
+def clear_queues(redis_client=None, queue_names=None):
+    """Clear specified Redis queues."""
     config = get_config()
-
     if queue_names is None:
-        # Clear all relevant queues if no specific names are given
         queue_names = [
-            config["input_queue_name"],
-            config["worker_queue_name"],
-            config["result_queue_name"],
-            config["output_queue_name"],
-            config["control_syn_queue_name"],
-            config["control_ack_queue_name"]
+            config.get("input_queue_name"),
+            config.get("worker_queue_name"),
+            config.get("result_queue_name"),
+            config.get("output_queue_name"),
+            config.get("control_syn_queue_name"),
+            config.get("control_ack_queue_name")
         ]
 
-    if redis_client is None:
+    redis_client = redis_client or init_redis_client()
+    for name in queue_names:
         try:
-            redis_client = init_redis_client()
-            for q_name in queue_names:
-                count = redis_client.delete(q_name)
-                print(f"Cleared Redis Queue '{q_name}'. Removed {count} items.")
-            print("All specified queues and sets cleared.")
+            count = redis_client.delete(name)
+            print(f"[INFO] Cleared Redis Queue '{name}' ({count} items removed).")
         except redis.exceptions.ConnectionError as e:
-            print(f"Redis connection error: {str(e)}. Attempting to reinitialize.")
-            time.sleep(5)
-            try:
-                redis_client = init_redis_client() # Reinitialize blocking client
-                for q_name in queue_names:
-                    count = redis_client.delete(q_name)
-                    print(f"Cleared Redis Queue '{q_name}'. Removed {count} items.")
-                print("All specified queues and sets cleared.")
-            except Exception as init_e:
-                print(f"CRITICAL ERROR: Redis reinit failed: {init_e}", file=sys.stderr)
-                return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
-
+            print(f"[ERROR] Redis connection failed: {e}", file=sys.stderr)
 
 def scale_function_deployment(replica_count, deployment_name="worker", namespace="openfaas-fn"):
-    """
-    Scales the Kubernetes deployment to the desired number of replicas.
-    """
+    """Scale a Kubernetes deployment."""
     try:
         config.load_incluster_config()
     except:
         try:
-            config.load_kube_config()  # fallback to local config for testing
+            config.load_kube_config()
         except Exception as e:
-            print(f"ERROR: Could not load Kubernetes config: {e}", file=sys.stderr)
+            print(f"[ERROR] Kubernetes config load failed: {e}", file=sys.stderr)
             sys.exit(1)
 
+    api = client.AppsV1Api()
+    body = {"spec": {"replicas": replica_count}}
+
     try:
-        api_instance = client.AppsV1Api()
-        body = {
-            "spec": {
-                "replicas": replica_count
-            }
-        }
-        api_instance.patch_namespaced_deployment_scale(
-            name=deployment_name,
-            namespace=namespace,
-            body=body,
-        )
-        print(f"[INFO] Successfully scaled deployment '{deployment_name}' to {replica_count} replicas.")
+        api.patch_namespaced_deployment_scale(name=deployment_name, namespace=namespace, body=body)
+        print(f"[INFO] Scaled '{deployment_name}' to {replica_count} replicas.")
     except ApiException as e:
-        print(f"ERROR: Failed to scale deployment '{deployment_name}': {e}", file=sys.stderr)
+        print(f"[ERROR] Initial scaling failed: {e}", file=sys.stderr)
         time.sleep(5)
         try:
-            api_instance.patch_namespaced_deployment_scale(
-                name=deployment_name,
-                namespace=namespace,
-                body=body,
-            )
-            print(f"[INFO] Retry succeeded: deployment scaled.")
-        except ApiException as retry_e:
-            print(f"CRITICAL ERROR: Retry scaling deployment failed: {retry_e}", file=sys.stderr)
-            return {"statusCode": 500, "body": f"Deployment scaling failure: {retry_e}"}
+            api.patch_namespaced_deployment_scale(name=deployment_name, namespace=namespace, body=body)
+            print(f"[INFO] Retry succeeded: scaled deployment.")
+        except ApiException as e:
+            print(f"[CRITICAL] Retry failed: {e}", file=sys.stderr)
 
-
-def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080", timeout=125):
-    """
-    Asynchronously invokes an OpenFaaS function via /async-function/<function_name>.
-
-    Args:
-        function_name (str): Name of the OpenFaaS function (e.g., "emitter", "collector", "worker")
-        payload (dict): JSON-serializable data to send
-        gateway_url (str): OpenFaaS gateway URL
-        timeout (int): Request timeout in seconds
-    """
+def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080"):
+    """Asynchronously invoke OpenFaaS function."""
     url = f"{gateway_url}/async-function/{function_name}"
     headers = {"Content-Type": "application/json"}
 
     try:
-        response = requests.post(url, data=json.dumps(payload), headers=headers, timeout=timeout)
+        response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
+        print(f"[INFO] Async invoked '{function_name}'")
     except requests.exceptions.RequestException as e:
-        print(f"[ERROR] Failed to asynchronously invoke '{function_name}': {e}", file=sys.stderr)
-        return
-
-    print(f"[INFO] Async invoked '{function_name}' function")
-    # print(f"Status Code: {response.status_code}")
-    # print("Response Body:", response.text)
-
-# def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080", timeout=125):
-#     """
-#     Asynchronously invokes an OpenFaaS function using Python threading.
-#     Uses /function/<function_name> endpoint instead of /async-function.
-
-#     Args:
-#         function_name (str): OpenFaaS function name (e.g., "emitter", "collector", "worker")
-#         payload (dict): JSON-serializable data
-#         gateway_url (str): OpenFaaS gateway URL
-#         timeout (int): Timeout in seconds
-#     """
-
-#     def invoke():
-#         url = f"{gateway_url}/function/{function_name}"
-#         headers = {"Content-Type": "application/json"}
-
-#         try:
-#             response = requests.post(url, data=json.dumps(payload), headers=headers, timeout=timeout)
-#             response.raise_for_status()
-#             print(f"[INFO] Async invoked '{function_name}' function")
-#             print(f"Status Code: {response.status_code}")
-#             print("Response Body:", response.text)
-#         except requests.exceptions.RequestException as e:
-#             print(f"[ERROR] Failed to invoke '{function_name}': {e}", file=sys.stderr)
-
-#     thread = threading.Thread(target=invoke)
-#     thread.daemon = True  # Optional: allows program to exit even if thread is running
-#     thread.start()
+        print(f"[ERROR] Async invocation failed: {e}", file=sys.stderr)
 
 def restart_function(function_name):
+    """Restart a Kubernetes function deployment."""
     try:
         subprocess.run(
             ["kubectl", "rollout", "restart", f"deploy/{function_name}", "-n", "openfaas-fn"],
             check=True
         )
-        print(f"[INFO] Restarted function: {function_name}")
+        print(f"[INFO] Restarted function '{function_name}'")
     except subprocess.CalledProcessError as e:
-        print(f"[ERROR] Failed to restart function '{function_name}': {e}")
+        print(f"[ERROR] Restart failed: {e}", file=sys.stderr)
 
 def get_current_worker_replicas(namespace="openfaas-fn", deployment_name="worker"):
+    """Return current number of worker replicas."""
     config.load_kube_config()
     apps_v1 = client.AppsV1Api()
     deployment = apps_v1.read_namespaced_deployment(deployment_name, namespace)
     return deployment.spec.replicas
 
 def send_control_messages(redis_client, control_syn_q, count):
-    """ Sends control messages to the control queue for requesting worker fuction scale down.
-    Args:
-        redis_client (redis.Redis): Redis client instance.
-        control_syn_q (str): Name of the Redis queue for control SYN messages.
-        count (int): Number of control messages to send.
-    """
+    """Send control messages to Redis SYN queue."""
+    message = {
+        "type": "SCALE_DOWN",
+        "action": "SYN",
+        "message": "Scale down request from orchestrator",
+        "SYN_timestamp": time.time()
+    }
+
     for _ in range(count):
-        control_message = {
-            "type": "SCALE_DOWN",  # Type of control message
-            "action": "SYN",  # Action to stop the worker
-            "message": "Scale down request from orchestrator",
-            "SYN_timestamp": time.time()
-        }
         try:
-            redis_client.lpush(control_syn_q, json.dumps(control_message))
+            redis_client.lpush(control_syn_q, json.dumps(message))
             print(f"[INFO] Sent control message to '{control_syn_q}'")
         except redis.exceptions.ConnectionError as e:
-            print(f"Redis connection error: {str(e)}. Attempting to reinitialize.")
+            print(f"[ERROR] Redis connection error: {e}. Retrying...", file=sys.stderr)
             time.sleep(5)
             try:
-                redis_client = init_redis_client()  # Reinitialize blocking client
-                redis_client.lpush(control_syn_q, json.dumps(control_message))
-                print(f"[INFO] Recovered: Sent control message to '{control_syn_q}'")
-            except Exception as init_e:
-                print(f"CRITICAL ERROR: Redis reinit and lpush failed: {init_e}", file=sys.stderr)
-                return {"statusCode": 500, "body": f"Redis failure: {init_e}"}
+                redis_client = init_redis_client()
+                redis_client.lpush(control_syn_q, json.dumps(message))
+                print(f"[INFO] Retry succeeded: control message sent.")
+            except Exception as e:
+                print(f"[CRITICAL] Retry failed: {e}", file=sys.stderr)
 
 def delete_pod_by_name(pod_name, namespace="openfaas-fn"):
-    # Load kubeconfig (default location: ~/.kube/config)
+    """Delete a pod by name."""
     config.load_kube_config()
-
-    # Create CoreV1Api client
     v1 = client.CoreV1Api()
-
     try:
-        # Delete the pod by name
-        v1.delete_namespaced_pod(
-            name=pod_name,
-            namespace=namespace,
-            body=client.V1DeleteOptions()  # Optional: grace_period_seconds, propagation_policy
-        )
-        print(f"[INFO] Pod {pod_name} deleted successfully.")
-    except client.exceptions.ApiException as e:
-        print(f"[INFO] Failed to delete pod: {e}")
+        v1.delete_namespaced_pod(name=pod_name, namespace=namespace, body=client.V1DeleteOptions())
+        print(f"[INFO] Deleted pod '{pod_name}'")
+    except ApiException as e:
+        print(f"[ERROR] Failed to delete pod '{pod_name}': {e}", file=sys.stderr)
 
 def get_worker_pod_names(namespace="openfaas-fn", label_selector="faas_function=worker"):
+    """Get a list of worker pod names."""
     config.load_kube_config()
     v1 = client.CoreV1Api()
     pods = v1.list_namespaced_pod(namespace=namespace, label_selector=label_selector)

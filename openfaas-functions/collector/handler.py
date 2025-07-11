@@ -9,172 +9,139 @@ import numpy as np
 redisClient = None
 
 def init_redis_client():
-    redis_hostname = os.getenv('redis_hostname', default='redis-master.redis.svc.cluster.local')
-    redis_port = os.getenv('redis_port')
     return redis.Redis(
-        host=redis_hostname,
-        port=redis_port,
+        host=os.getenv("redis_hostname", "redis-master.redis.svc.cluster.local"),
+        port=os.getenv("redis_port"),
         decode_responses=True
     )
 
+def parse_request_body(event):
+    try:
+        body = json.loads(event.body)
+        if not body:
+            raise ValueError("Empty request body")
+        return body
+    except (json.JSONDecodeError, TypeError, ValueError) as e:
+        print(f"ERROR: {e} - Raw Body: {str(event.body)[:512]}", file=sys.stderr)
+        return None
+
+def reinvoke_self(payload):
+    try:
+        response = requests.post(
+            "http://gateway.openfaas.svc.cluster.local:8080/async-function/collector",
+            data=json.dumps(payload),
+            headers={"Content-Type": "application/json"}
+        )
+        print(f"[INFO] Reinvoked collector - Status: {response.status_code}, Body: {response.text}")
+    except requests.exceptions.RequestException as e:
+        print(f"[ERROR] Self-reinvoke failed: {e}", file=sys.stderr)
+
+def safe_redis_call(func):
+    try:
+        return func()
+    except redis.exceptions.ConnectionError as e:
+        print(f"[ERROR] Redis connection error: {e}. Retrying...")
+        time.sleep(5)
+        global redisClient
+        redisClient = init_redis_client()
+        return func()
+
 def handle(event, context):
-    print(f"!!!!!!!!!!!!! Collector function invoked at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))} !!!!!!!!!!!!!")
+    print(f"\n[Collector] Invoked at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     global redisClient
-    total_tasks = 0
-    tasks_met_deadline = 0
+    if redisClient is None:
+        try:
+            redisClient = init_redis_client()
+        except redis.exceptions.ConnectionError as e:
+            print(f"[CRITICAL] Redis connection failed: {e}", file=sys.stderr)
+            return {"statusCode": 500, "body": f"Redis connection failed: {e}"}
+
+    body = parse_request_body(event)
+    if not body:
+        return {"statusCode": 400, "body": "Invalid JSON in request body."}
+
+    result_q, output_q = body.get('result_queue_name'), body.get("output_queue_name")
+    input_q, feedback_flag = body.get('input_queue_name'), body.get("collector_feedback_flag", False)
+
+    if not all([input_q, result_q, output_q, feedback_flag is not None]):
+        return {"statusCode": 400, "body": "Missing required fields in request body."}
+
+    tasks_processed = 0
     iteration_end = None
 
     while True:
         print("------------------------------")
         iteration_start = time.time()
-        print(f"[INFO] Collector loop iteration started at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(iteration_start))}")
-
-        if iteration_end is not None:
-            gap_time = iteration_start - iteration_end
-            print(f"[INFO] Time gap since last iteration: {gap_time:.2f} seconds")
-
+        if iteration_end:
+            print(f"[INFO] Time since last iteration: {iteration_start - iteration_end:.2f} sec")
         try:
-            if redisClient is None:
-                try:
-                    redisClient = init_redis_client()
-                except redis.exceptions.ConnectionError as e:
-                    print(f"[ERROR] Redis init failed: {e}. Retrying in 5 seconds...")
-                    time.sleep(5)
-                    redisClient = init_redis_client()
-
-            try:
-                request_body = json.loads(event.body)
-                collector_feedback_flag = request_body.get("collector_feedback_flag", False)
-                result_queue_name = request_body.get("result_queue_name")
-                output_queue_name = request_body.get("output_queue_name")
-                input_queue_name = request_body.get("input_queue_name")
-            except (json.JSONDecodeError, TypeError) as e:
-                return {"statusCode": 400, "body": f"Invalid request body: {str(e)}"}
-
-            if not result_queue_name or not output_queue_name:
-                return {"statusCode": 400, "body": "Missing 'result_queue_name' or 'output_queue_name'."}
-
-            # Fetch all results from result_queue
-            queue_length = redisClient.llen(result_queue_name)
+            queue_length = safe_redis_call(lambda: redisClient.llen(result_q))
             if queue_length == 0:
-                print(f"[INFO] Result queue '{result_queue_name}' is empty. Waiting...")
+                print(f"[INFO] Queue '{result_q}' empty. Reinvoking...")
                 time.sleep(10)
-                # continue
-                # Reinvoke self to check for new results
-                print(f"[INFO] Reinvoking self to check for new results in '{result_queue_name}'...")
-                # Prepare payload for self-reinvoke
-                payload = {
-                    "start_flag": True,
-                    "collector_feedback_flag": collector_feedback_flag,
-                    "input_queue_name": input_queue_name,
-                    "result_queue_name": result_queue_name,
-                    "output_queue_name": output_queue_name
-                }
+                reinvoke_self(body)
+                break
 
-                try:
-                    response = requests.post(
-                        "http://gateway.openfaas.svc.cluster.local:8080/async-function/collector",
-                        data=json.dumps(payload),
-                        headers={"Content-Type": "application/json"}
-                    )
-                    print(f"[INFO] Reinvoked collector - Status: {response.status_code}")
-                    print("Response Body:", response.text)
-                except requests.exceptions.RequestException as e:
-                    print(f"ERROR: Self-reinvoke failed: {e}", file=sys.stderr)
-
-                break  # Exit current loop after reinvoking
-
+            # Fetch and parse results
             raw_results = []
             for _ in range(queue_length):
-                raw = redisClient.rpop(result_queue_name)
-                if raw:
-                    try:
-                        result = json.loads(raw)
-                        raw_results.append(result)
-                    except json.JSONDecodeError:
-                        print(f"[WARN] Skipping invalid JSON result: {raw}")
-                        continue
+                raw = safe_redis_call(lambda: redisClient.rpop(result_q))
+                if not raw:
+                    continue
+                try:
+                    raw_results.append(json.loads(raw))
+                except json.JSONDecodeError:
+                    print(f"[WARN] Skipped invalid JSON result: {raw[:128]}")
 
-            # Sort results by emit timestamp
-            sorted_results = sorted(raw_results, key=lambda r: r.get("task_emit_timestamp", 0))
-
-            # Process and push sorted results
-            for result in sorted_results:
+            # Process results
+            for result in sorted(raw_results, key=lambda r: r.get("task_emit_timestamp")):
                 task_id = result.get("task_id")
-                task_application = result.get("task_application")
-                task_emit_timestamp = result.get("task_emit_timestamp")
-                task_deadline = result.get("task_deadline")
-                complete_timestamp = result.get("complete_timestamp")
-                result_data = result.get("result_data")
-                output_size = result.get("output_size")
-                emit_time = result.get("emit_time")
-                complete_time = result.get("complete_time")
+                emit_ts = result.get("task_emit_timestamp")
+                deadline = result.get("task_deadline")
+                complete_ts = result.get("complete_timestamp")
 
-                task_collect_timestamp = time.time()
-                deadline_exceeded = (task_collect_timestamp - task_emit_timestamp) > task_deadline
-                qos = not deadline_exceeded
+                collect_ts = time.time()
+                deadline_met = (collect_ts - emit_ts) <= deadline
 
-                structured_result = {
+                structured = {
                     "task_id": task_id,
-                    "result_data": result_data,
-                    "task_application": task_application,
-                    "emit_time": emit_time,
-                    "task_emit_timestamp": task_emit_timestamp,
-                    "task_deadline": task_deadline,
-                    "collect_time": task_collect_timestamp - complete_timestamp,
-                    "task_collect_timestamp": task_collect_timestamp,
-                    "output_size": output_size,
-                    "complete_time": complete_time,
-                    "complete_timestamp": complete_timestamp,
-                    "QoS": qos
+                    "task_application": result.get("task_application"),
+                    "result_data": result.get("result_data"),
+                    "emit_time": result.get("emit_time"),
+                    "task_emit_timestamp": emit_ts,
+                    "task_deadline": deadline,
+                    "collect_time": collect_ts - complete_ts,
+                    "task_collect_timestamp": collect_ts,
+                    "output_size": result.get("output_size"),
+                    "complete_time": result.get("complete_time"),
+                    "complete_timestamp": complete_ts,
+                    "QoS": deadline_met
                 }
 
-                try:
-                    redisClient.rpush(output_queue_name, json.dumps(structured_result))
-                    print(f"[INFO] RPUSHED task {task_id} to output queue.")
-                except redis.exceptions.ConnectionError as e:
-                    print(f"[ERROR] Redis push failed: {e}. Retrying...")
-                    time.sleep(5)
-                    redisClient = init_redis_client()
-                    redisClient.rpush(output_queue_name, json.dumps(structured_result))
+                safe_redis_call(lambda: redisClient.rpush(output_q, json.dumps(structured)))
+                print(f"[INFO] Pushed result of task {task_id} to '{output_q}'")
 
-                total_tasks += 1
-                if qos:
-                    tasks_met_deadline += 1
-
-                # Feedback logic
-                if collector_feedback_flag and input_queue_name:
-                    print(f"[INFO] Feedback enabled. Generating new task from {task_id}.")
-                    if result_data is not None:
-                        matrix = np.array(result_data.get("result_matrix"))
-
-                    new_task = {
-                        "task_application": task_application,
-                        "task_data": None,  # Placeholder if needed
-                        "task_data_size": output_size,
+                # Feedback task generation
+                if feedback_flag and input_q:
+                    print(f"[INFO] Feedback: Generating task from result {task_id}")
+                    feedback_task = {
+                        "task_application": structured["task_application"],
+                        "task_data": None,
+                        "task_data_size": structured["output_size"],
                         "task_deadline": 1
                     }
-
-                    try:
-                        redisClient.lpush(input_queue_name, json.dumps(new_task))
-                        print(f"[INFO] Feedback task for {task_id} pushed to input queue.")
-                    except redis.exceptions.ConnectionError as e:
-                        print(f"[ERROR] Redis feedback push failed: {e}. Retrying...")
-                        time.sleep(5)
-                        redisClient = init_redis_client()
-                        redisClient.lpush(input_queue_name, json.dumps(new_task))
+                    safe_redis_call(lambda: redisClient.lpush(input_q, json.dumps(feedback_task)))
 
             iteration_end = time.time()
-            print(f"[INFO] Collector loop iteration completed in {iteration_end - iteration_start:.2f} seconds.")
+            tasks_processed = len(raw_results)
+            print(f"[INFO] Processed {tasks_processed} results from '{result_q}' and pushed to '{output_q}'.")
+            print(f"[INFO] Iteration completed in {iteration_end - iteration_start:.2f} seconds.")
 
         except Exception as e:
-            print(f"[ERROR] Unexpected error: {e}", file=sys.stderr)
+            print(f"ERROR: Unexpected error: {e}", file=sys.stderr)
             break
-
-    qos_rate = (tasks_met_deadline / total_tasks * 100) if total_tasks else 0
-    print(f"[SUMMARY] Total Tasks: {total_tasks}, Met Deadline: {tasks_met_deadline}, QoS Success Rate: {qos_rate:.2f}%")
 
     return {
         "statusCode": 200,
-        "body": f"Collector processed {total_tasks} tasks from '{result_queue_name}' with {qos_rate:.2f}% meeting deadline."
+        "body": f"Processed {tasks_processed} results from '{result_q}' and pushed to '{output_q}'."
     }
