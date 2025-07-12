@@ -36,6 +36,7 @@ AI-based-Autonomic-Management-of-Structured-Parallel-Programs/
     ├── worker_scaler.py         # Manually scales worker pods up/down (+1, -1, etc.)
     ├── task_generator.py        # Generates synthetic matrix multiplication tasks
     ├── workflow_controller.py   # Automates full pipeline/farm workflow
+    ├── run_workflow.py          # Testing and debugging
     └── utilities.py             # Shared utility functions for config and K8s client
 ```
 
