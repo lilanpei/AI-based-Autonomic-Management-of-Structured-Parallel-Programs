@@ -107,6 +107,10 @@ python orchestrator/worker_scaler.py -1
 - **Redis output** queue contains final structured results
 - When `collector_feedback_flag=True`, additional tasks are auto-generated based on prior results
 
+```bash
+# Testing and Debugging
+python run_workflow.py python workflow_controller.py --mode farm --workers 4 --tasks 10
+```
 ## ⚙️ Customization
 
 - Update `orchestrator/configuration.yml` to customize:
