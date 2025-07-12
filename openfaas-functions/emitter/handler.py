@@ -5,6 +5,7 @@ import time
 import uuid
 import redis
 import requests
+from threading import Thread
 
 redisClient = None
 
@@ -34,6 +35,36 @@ def safe_redis_call(func):
         global redisClient
         redisClient = init_redis_client()
         return func()
+
+def async_function(func, *args, **kwargs):
+    """
+    Runs any function asynchronously with given arguments.
+
+    Args:
+        func (callable): The function to execute.
+        *args: Positional arguments for the function.
+        **kwargs: Keyword arguments for the function.
+    """
+    thread = Thread(target=func, args=args, kwargs=kwargs)
+    # thread.daemon = True  # Optional: thread dies with the main program
+    thread.start()
+
+def invoke_function_sync(function_name, payload, gateway_url="http://127.0.0.1:8080"):
+    """Asynchronously invoke OpenFaaS function."""
+    url = f"{gateway_url}/sync-function/{function_name}"
+    headers = {"Content-Type": "application/json"}
+
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code == 200:
+            print(f"[WARM-UP] Successfully invoked '{function_name}'")
+        else:
+            print(f"[WARM-UP] Failed to invoke '{function_name}' - Status {response.status_code}")
+    except Exception as e:
+        print(f"[WARM-UP] Error invoking '{function_name}': {e}")
+
+# def reinvoke_self(payload):
+#     async_function((invoke_function_sync), "emitter", payload, "http://127.0.0.1:8080")
 
 def reinvoke_self(payload):
     try:
@@ -101,8 +132,8 @@ def handle(event, context):
 
             if not raw_task:
                 print(f"[INFO] No task in '{input_q}', reinvoking and exiting...")
-                time.sleep(10)
-                reinvoke_self(body)
+                # time.sleep(10)
+                # reinvoke_self(body)
                 break
 
             task = extract_task(raw_task)

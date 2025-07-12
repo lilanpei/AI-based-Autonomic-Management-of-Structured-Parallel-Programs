@@ -68,7 +68,7 @@ def scale_down(current, delta, config, payload):
     redis_client = get_redis_client_with_retry()
     control_syn_q = config["control_syn_queue_name"]
     control_ack_q = config["control_ack_queue_name"]
-
+    warm_up_enabled = True
     new_replicas = max(current + delta, 1)
     count = current - new_replicas
 
@@ -76,9 +76,9 @@ def scale_down(current, delta, config, payload):
     print(f"[INFO] Sending {count} control requests...")
 
     # Ensure workers are listening
-    for _ in range(current):
-        invoke_function_async("worker", payload)
-    time.sleep(5)
+    if warm_up_enabled:
+        for _ in range(current):
+            invoke_function_async("worker", payload)
 
     # Send SCALE_DOWN control messages
     send_control_messages(redis_client, control_syn_q, count)
@@ -130,7 +130,6 @@ def main():
         return
 
     payload = {
-        "start_flag": "True",
         "worker_queue_name": config["worker_queue_name"],
         "result_queue_name": config["result_queue_name"],
         "control_syn_queue_name": config["control_syn_queue_name"],

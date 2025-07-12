@@ -100,6 +100,24 @@ def scale_function_deployment(replica_count, deployment_name="worker", namespace
         except ApiException as e:
             print(f"[CRITICAL] Retry failed: {e}", file=sys.stderr)
 
+def invoke_function_sync(function_name, payload, gateway_url="http://127.0.0.1:8080"):
+    """Asynchronously invoke OpenFaaS function."""
+    url = f"{gateway_url}/sync-function/{function_name}"
+    headers = {"Content-Type": "application/json"}
+
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code == 200:
+            print(f"[WARM-UP] Successfully invoked '{function_name}'")
+        else:
+            print(f"[WARM-UP] Failed to invoke '{function_name}' - Status {response.status_code}")
+    except Exception as e:
+        print(f"[WARM-UP] Error invoking '{function_name}': {e}")
+
+# def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080"):
+#     """Invoke OpenFaaS function asynchronously."""
+#     async_function((invoke_function_sync), function_name, payload, gateway_url)
+
 def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080"):
     """Asynchronously invoke OpenFaaS function."""
     url = f"{gateway_url}/async-function/{function_name}"
@@ -111,6 +129,19 @@ def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:
         print(f"[INFO] Async invoked '{function_name}'")
     except requests.exceptions.RequestException as e:
         print(f"[ERROR] Async invocation failed: {e}", file=sys.stderr)
+
+def async_function(func, *args, **kwargs):
+    """
+    Runs any function asynchronously with given arguments.
+
+    Args:
+        func (callable): The function to execute.
+        *args: Positional arguments for the function.
+        **kwargs: Keyword arguments for the function.
+    """
+    thread = Thread(target=func, args=args, kwargs=kwargs)
+    # thread.daemon = True  # Optional: thread dies with the main program
+    thread.start()
 
 def restart_function(function_name):
     """Restart a Kubernetes function deployment."""

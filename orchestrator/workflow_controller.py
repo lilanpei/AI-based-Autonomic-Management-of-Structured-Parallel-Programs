@@ -4,7 +4,7 @@ import sys
 import time
 import redis
 import json
-from utilities import get_config, init_redis_client, get_current_worker_replicas
+from utilities import get_config, init_redis_client, get_current_worker_replicas, invoke_function_async
 
 
 def run_script(script_name, args=[]):
@@ -48,6 +48,7 @@ def monitor_worker_replicas():
         print(f"  Current worker replicas: {replicas}")
     except Exception as e:
         print(f"[WARNING] Could not retrieve worker replicas: {e}")
+    return replicas
 
 
 def analyze_output_queue(redis_client, total_tasks):
@@ -136,21 +137,60 @@ def monitor_queues(interval=5, total_tasks=1000, start_time=None, feedback_enabl
         config["control_syn_queue_name"],
         config["control_ack_queue_name"]
     ]
-
+    emitter_payload = {
+        "input_queue_name": config["input_queue_name"],
+        "worker_queue_name": config["worker_queue_name"]
+    }
+    worker_payload = {
+        "worker_queue_name": config["worker_queue_name"],
+        "result_queue_name": config["result_queue_name"],
+        "control_syn_queue_name": config["control_syn_queue_name"],
+        "control_ack_queue_name": config["control_ack_queue_name"]
+    }
+    collector_payload = {
+        "collector_feedback_flag": False if not feedback_enabled else True,
+        "input_queue_name": config["input_queue_name"],
+        "result_queue_name": config["result_queue_name"],
+        "output_queue_name": config["output_queue_name"]
+    }
     redis_client = init_redis_client_with_retry()
 
     print("\n[INFO] Starting Redis queue monitoring...")
 
     end_time = None
+    warm_up_enabled = True
+    warm_up_interval = 30  # seconds
+    last_warm_up_time = time.time()
 
     while True:
-        print(f"---------------{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}---------------")
+        now = time.time()
+        print(f"---------------{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}---------------")
         print("\n[QUEUE STATUS]")
         for queue in QUEUE_NAMES:
             length = redis_client.llen(queue)
             print(f"  {queue}: {length} items")
 
-        monitor_worker_replicas()
+        replicas = monitor_worker_replicas()
+
+        # Periodic warm-up every warm_up_interval seconds
+        # Warm-up conditionally based on queue contents
+        if warm_up_enabled and now - last_warm_up_time >= warm_up_interval:
+            try:
+                if redis_client.llen(config["input_queue_name"]) > 0:
+                    print("[WARM-UP] Invoking emitter (input queue not empty)...")
+                    invoke_function_async("emitter", emitter_payload)
+
+                if redis_client.llen(config["worker_queue_name"]) > 0:
+                    print("[WARM-UP] Invoking worker(s) (worker queue not empty)...")
+                    for _ in range(replicas):
+                        invoke_function_async("worker", worker_payload)
+
+                if redis_client.llen(config["result_queue_name"]) > 0:
+                    print("[WARM-UP] Invoking collector (result queue not empty)...")
+                    invoke_function_async("collector", collector_payload)
+            except Exception as e:
+                print(f"[WARM-UP] Error: {e}")
+            last_warm_up_time = now
 
         total_results = analyze_output_queue(redis_client, total_tasks)
 

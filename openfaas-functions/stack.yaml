@@ -10,14 +10,14 @@ functions:
     image: lilanpei/emitter:latest
     # image: $USERID/$IMAGE_NAME:$TAG
     environment:
+      read_timeout: 1h   # Time to read HTTP request
+      write_timeout: 1h  # Time to write HTTP response
+      exec_timeout: 1h   # Maximum execution time
       redis_hostname: "redis-master.redis.svc.cluster.local"
       redis_port: 6379
     annotations: # ESSENTIAL for a long-running worker
-      read_timeout: "120s"   # Time to read HTTP request
-      write_timeout: "120s"  # Time to write HTTP response
-      exec_timeout: "120s"   # Maximum execution time
-      prometheus.io.scrape: True
-      prometheus.io.port: "8080"
+      com.openfaas.scale.min: "1"
+      com.openfaas.schedule: "*/1 * * * *"
 
   worker:
     lang: python3-http
@@ -25,22 +25,14 @@ functions:
     image: lilanpei/worker:latest
     # image: $USERID/$IMAGE_NAME:$TAG
     environment:
+      read_timeout: 1h   # Time to read HTTP request
+      write_timeout: 1h  # Time to write HTTP response
+      exec_timeout: 1h   # Maximum execution time
       redis_hostname: "redis-master.redis.svc.cluster.local"
       redis_port: 6379
-      TASK_QUEUE_NAME: task_queue
-      RESULTS_QUEUE_NAME: results_queue
     annotations: # ESSENTIAL for a long-running worker
-      read_timeout: "120s"   # Time to read HTTP request
-      write_timeout: "120s"  # Time to write HTTP response
-      exec_timeout: "120s"   # Maximum execution time
-      prometheus.io.scrape: True
-      prometheus.io.port: "8080"
-    limits:
-      memory: 256Mi
-      cpu: 150m
-    requests:
-      memory: 256Mi
-      cpu: 150m
+      com.openfaas.scale.min: "1"
+      com.openfaas.schedule: "*/1 * * * *"
 
   collector:
     lang: python3-http
@@ -48,16 +40,14 @@ functions:
     image: lilanpei/collector:latest
     # image: $USERID/$IMAGE_NAME:$TAG
     environment:
+      read_timeout: 1h   # Time to read HTTP request
+      write_timeout: 1h  # Time to write HTTP response
+      exec_timeout: 1h   # Maximum execution time
       redis_hostname: "redis-master.redis.svc.cluster.local"
       redis_port: 6379
-      RESULTS_QUEUE_NAME: results_queue
-      COMPLETED_RESULTS_SET_NAME: completed_tasks_results
-    annotations: 
-      read_timeout: "120s"   # Time to read HTTP request
-      write_timeout: "120s"  # Time to write HTTP response
-      exec_timeout: "120s"   # Maximum execution time
-      prometheus.io.scrape: True
-      prometheus.io.port: "8080"
+    annotations: # ESSENTIAL for a long-running worker
+      com.openfaas.scale.min: "1"
+      com.openfaas.schedule: "*/1 * * * *"
 
 configuration:
   templates:
