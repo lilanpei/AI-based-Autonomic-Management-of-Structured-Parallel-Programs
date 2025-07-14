@@ -36,10 +36,10 @@ def async_function(func, *args, **kwargs):
         **kwargs: Keyword arguments for the function.
     """
     thread = Thread(target=func, args=args, kwargs=kwargs)
-    # thread.daemon = True  # Optional: thread dies with the main program
+    thread.daemon = True  # Optional: thread dies with the main program
     thread.start()
 
-def invoke_function_sync(function_name, payload, gateway_url="http://127.0.0.1:8080"):
+def invoke_function_sync(function_name, payload, gateway_url="http://gateway.openfaas.svc.cluster.local:8080"):
     """Asynchronously invoke OpenFaaS function."""
     url = f"{gateway_url}/sync-function/{function_name}"
     headers = {"Content-Type": "application/json"}
@@ -53,19 +53,21 @@ def invoke_function_sync(function_name, payload, gateway_url="http://127.0.0.1:8
     except Exception as e:
         print(f"[WARM-UP] Error invoking '{function_name}': {e}")
 
-# def reinvoke_self(payload):
-#     async_function((invoke_function_sync), "worker", payload, "http://127.0.0.1:8080")
+# def invoke_function_async(function_name, payload, gateway_url="http://gateway.openfaas.svc.cluster.local:8080"):
+#     """Invoke OpenFaaS function asynchronously."""
+#     async_function((invoke_function_sync), function_name, payload, gateway_url)
 
-def reinvoke_self(payload):
+def invoke_function_async(function_name, payload, gateway_url="http://gateway.openfaas.svc.cluster.local:8080"):
+    """Asynchronously invoke OpenFaaS function."""
+    url = f"{gateway_url}/async-function/{function_name}"
+    headers = {"Content-Type": "application/json"}
+
     try:
-        response = requests.post(
-            "http://gateway.openfaas.svc.cluster.local:8080/async-function/worker",
-            data=json.dumps(payload),
-            headers={"Content-Type": "application/json"}
-        )
-        print(f"[INFO] Reinvoked worker - Status: {response.status_code}, Body: {response.text}")
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        print(f"[INFO] Async invoked '{function_name}'")
     except requests.exceptions.RequestException as e:
-        print(f"ERROR: Self-reinvoke failed: {e}", file=sys.stderr)
+        print(f"[ERROR] Async invocation failed: {e}", file=sys.stderr)
 
 def safe_redis_call(func):
     try:
@@ -86,7 +88,7 @@ def fetch_control_message(redis_client, control_queue):
         return None
 
 def prepare_matrices(task):
-    task_data, task_size = task.get("data"), task.get("size")
+    task_data, task_size = task.get("task_data"), task.get("task_data_size")
     if task_data:
         matrix_a = np.array(task_data.get("matrix_A"))
         matrix_b = np.array(task_data.get("matrix_B"))
@@ -119,70 +121,85 @@ def handle(event, context):
     if not all([worker_q, result_q, control_syn_q, control_ack_q]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
-    tasks_processed = 0
-    iteration_end = None
+    # tasks_processed = 0
+    # iteration_end = None
 
-    while True:
-        print("------------------------------")
-        iteration_start = time.time()
-        if iteration_end:
-            print(f"[INFO] Time since last iteration: {iteration_start - iteration_end:.2f} sec")
+    # while True:
+    print("------------------------------")
+    iteration_start = time.time()
+    # if iteration_end:
+    #     print(f"[INFO] Time since last iteration: {iteration_start - iteration_end:.2f} sec")
 
-        try:
-            control_msg = fetch_control_message(redisClient, control_syn_q)
-            if control_msg and control_msg.get("type") == "SCALE_DOWN" and control_msg.get("action") == "SYN":
-                ack_msg = {
-                    "type": "SCALE_DOWN",
-                    "action": "ACK",
-                    "ack_timestamp": time.time(),
-                    "task_id": control_msg.get("task_id"),
-                    "pod_name": os.environ.get("HOSTNAME"),
-                    "message": "Worker pod is exiting as instructed."
-                }
+    try:
+        control_msg = fetch_control_message(redisClient, control_syn_q)
+        if control_msg and control_msg.get("type") == "SCALE_DOWN" and control_msg.get("action") == "SYN":
+            ack_msg = {
+                "type": "SCALE_DOWN",
+                "action": "ACK",
+                "ack_timestamp": time.time(),
+                "task_id": control_msg.get("task_id"),
+                "pod_name": os.environ.get("HOSTNAME"),
+                "message": "Worker pod is exiting as instructed."
+            }
 
-                safe_redis_call(lambda: redisClient.lpush(control_ack_q, json.dumps(ack_msg)))
-                print(f"[INFO] Sent ACK for control message: {ack_msg}")
-                break
+            safe_redis_call(lambda: redisClient.lpush(control_ack_q, json.dumps(ack_msg)))
+            print(f"[INFO] Sent ACK for control message: {ack_msg}")
+            return {
+                "statusCode": 200,
+                "body": f"Worker pod {os.environ.get('HOSTNAME')} acknowledged scale down."
+            }
 
-            raw_task = safe_redis_call(lambda: redisClient.rpop(worker_q))
+        raw_task = safe_redis_call(lambda: redisClient.rpop(worker_q))
 
-            if not raw_task:
-                print(f"[INFO] No task found in '{worker_q}', reinvoking and exiting...")
-                # time.sleep(10)
-                # reinvoke_self(body)
-                break
-
+        if not raw_task:
+            print(f"[INFO] No task found in '{worker_q}', waiting for tasks...")
+            # time.sleep(5)
+            # invoke_function_async("worker", body)
+            # continue # break
+        else:
             task = json.loads(raw_task)
-            if task.get("application") != "matrix_multiplication":
+            if task.get("task_application") != "matrix_multiplication":
                 raise ValueError("Unsupported task application")
 
+            task_id = task.get("task_id")
             matrix_a, matrix_b = prepare_matrices(task)
             result_matrix = np.dot(matrix_a, matrix_b)
+            time.sleep(2)  # Simulate processing delay
             now = time.time()
+            emit_ts = task.get("task_emit_timestamp")
             result = {
-                "task_id": task.get("id"),
-                "result_data": None,
-                "task_application": task.get("application"),
-                "task_emit_timestamp": task.get("timestamp"),
-                "task_deadline": task.get("deadline"),
-                "output_size": result_matrix.shape,
-                "emit_time": now - task.get("timestamp", now),
-                "complete_time": 2,
-                "complete_timestamp": now
+                "task_id": task_id,
+                "task_result_data": None,
+                "task_application": task.get("task_application"),
+                "task_gen_timestamp": task.get("task_gen_timestamp"),
+                "task_deadline": task.get("task_deadline"),
+                "task_output_size": result_matrix.shape,
+                "task_emit_time": task.get("task_emit_time"),
+                "task_emit_timestamp" : emit_ts,
+                "task_work_time": now - emit_ts,
+                "task_work_timestamp": now
             }
             safe_redis_call(lambda: redisClient.lpush(result_q, json.dumps(result)))
-            print(f"[INFO] Processed task {task.get('id')} and pushed result to '{result_q}'")
-            tasks_processed += 1
+            invoke_function_async("collector", body)
+            print(f"[INFO] Processed task {task_id} and pushed result to '{result_q}'")
 
-            if tasks_processed % 50 == 0:
-                print(f"[INFO] Processed {tasks_processed} tasks")
-
-        except Exception as e:
-            print(f"[ERROR] Failed to process task: {e}", file=sys.stderr)
+        # tasks_processed += 1
+        # if tasks_processed % 50 == 0:
+        #     print(f"[INFO] Processed {tasks_processed} tasks")
 
         iteration_end = time.time()
+        print(f"[INFO] Iteration completed in {iteration_end - iteration_start:.2f}s")
+
+    except Exception as e:
+        print(f"[ERROR] Failed to process task: {e}", file=sys.stderr)
+        # break
+        return {
+            "statusCode": 500,
+            "body": f"Failed to process task: {e}"
+        }
 
     return {
         "statusCode": 200,
-        "body": f"Worker processed {tasks_processed} tasks from '{worker_q}' to '{result_q}'"
+        # "body": f"Worker processed {tasks_processed} tasks from '{worker_q}' to '{result_q}'"
+        "body": f"Worker processed task from '{worker_q}' to '{result_q}'"
     }

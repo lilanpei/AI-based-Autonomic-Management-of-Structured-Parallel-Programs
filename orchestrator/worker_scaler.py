@@ -20,12 +20,13 @@ def parse_args():
     """
     Parses and validates CLI arguments.
     """
-    if len(sys.argv) != 2:
-        print("Usage: python worker_scaler.py <scale_delta>")
-        print("Example: python worker_scaler.py +1")
+    if len(sys.argv) != 3:
+        print("Usage: python worker_scaler.py <scale_delta> <feedback_enabled>")
+        print("Example: python worker_scaler.py +1 False")
         sys.exit(1)
 
     delta_str = sys.argv[1]
+    feedback_flag = sys.argv[2].lower() == "true"
 
     if delta_str not in VALID_DELTAS:
         print("ERROR: scale_delta must be one of +2, +1, 0, -1, -2")
@@ -68,7 +69,7 @@ def scale_down(current, delta, config, payload):
     redis_client = get_redis_client_with_retry()
     control_syn_q = config["control_syn_queue_name"]
     control_ack_q = config["control_ack_queue_name"]
-    warm_up_enabled = True
+    warm_up_enabled = False  # Set to True if warm-up is needed
     new_replicas = max(current + delta, 1)
     count = current - new_replicas
 
@@ -130,10 +131,13 @@ def main():
         return
 
     payload = {
+        "input_queue_name": config["input_queue_name"],
         "worker_queue_name": config["worker_queue_name"],
         "result_queue_name": config["result_queue_name"],
+        "output_queue_name": config["output_queue_name"],
         "control_syn_queue_name": config["control_syn_queue_name"],
-        "control_ack_queue_name": config["control_ack_queue_name"]
+        "control_ack_queue_name": config["control_ack_queue_name"],
+        "collector_feedback_flag": False if not feedback_flag else True,
     }
 
     current_replicas = get_current_worker_replicas()

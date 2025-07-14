@@ -87,7 +87,7 @@ def run_commands_with_logs():
                     stderr=subprocess.STDOUT,
                     text=True
                 )
-                time.sleep(2)  # Ensure log file is created before appending
+                time.sleep(5)  # Ensure log file is created before appending
                 processes.append((process, cmd_info["cmd"], cmd_info["log_file"]))
                 print(f"Started: {' '.join(cmd_info['cmd'])} → {cmd_info['log_file']}")
 

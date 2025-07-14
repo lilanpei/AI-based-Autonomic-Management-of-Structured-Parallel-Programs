@@ -140,7 +140,7 @@ def async_function(func, *args, **kwargs):
         **kwargs: Keyword arguments for the function.
     """
     thread = Thread(target=func, args=args, kwargs=kwargs)
-    # thread.daemon = True  # Optional: thread dies with the main program
+    thread.daemon = True  # Optional: thread dies with the main program
     thread.start()
 
 def restart_function(function_name):
@@ -200,3 +200,58 @@ def get_worker_pod_names(namespace="openfaas-fn", label_selector="faas_function=
     v1 = client.CoreV1Api()
     pods = v1.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
     return [pod.metadata.name for pod in pods.items]
+
+def init_pipeline(feedback_flag):
+    """
+    Initialize the pipeline by clearing queues and scaling deployments.
+    """
+    print("[INFO] Initializing pipeline...")
+    print(f"[INFO] Feedback flag: {feedback_flag}")
+
+    config = get_config()
+
+    # Scale worker deployment to 1 replica
+    scale_function_deployment(1, deployment_name="worker", namespace="openfaas-fn")
+
+    # payload = {
+    #     "input_queue_name": config["input_queue_name"],
+    #     "worker_queue_name": config["worker_queue_name"],
+    #     "result_queue_name": config["result_queue_name"],
+    #     "output_queue_name": config["output_queue_name"],
+    #     "control_syn_queue_name": config["control_syn_queue_name"],
+    #     "control_ack_queue_name": config["control_ack_queue_name"],
+    #     "collector_feedback_flag": feedback_flag
+    # }
+
+    # invoke_function_async("emitter", payload)
+    # invoke_function_async("worker", payload)
+    # invoke_function_async("collector", payload)
+
+def init_farm(replicas, feedback_flag):
+    """
+    Initialize the farm by clearing queues and scaling deployments.
+    """
+    print("[INFO] Initializing farm...")
+    print(f"[INFO] Number of replicas: {replicas}, Feedback flag: {feedback_flag}")
+
+    config = get_config()
+
+    # Scale worker deployment to replicas
+    scale_function_deployment(replicas, deployment_name="worker", namespace="openfaas-fn")
+
+    # payload = {
+    #     "input_queue_name": config["input_queue_name"],
+    #     "worker_queue_name": config["worker_queue_name"],
+    #     "result_queue_name": config["result_queue_name"],
+    #     "output_queue_name": config["output_queue_name"],
+    #     "control_syn_queue_name": config["control_syn_queue_name"],
+    #     "control_ack_queue_name": config["control_ack_queue_name"],
+    #     "collector_feedback_flag": feedback_flag
+    # }
+
+    # invoke_function_async("emitter", payload)
+
+    # for i in range(replicas):
+    #     invoke_function_async("worker", payload)
+
+    # invoke_function_async("collector", payload)

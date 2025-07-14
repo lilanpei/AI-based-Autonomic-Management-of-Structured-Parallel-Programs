@@ -4,7 +4,14 @@ import sys
 import time
 import redis
 import json
-from utilities import get_config, init_redis_client, get_current_worker_replicas, invoke_function_async
+from utilities import (
+    get_config,
+    init_redis_client,
+    init_pipeline,
+    init_farm,
+    get_current_worker_replicas,
+    invoke_function_async
+)
 
 
 def run_script(script_name, args=[]):
@@ -81,20 +88,20 @@ def analyze_output_queue(redis_client, total_tasks):
         try:
             result = json.loads(raw)
             task_id = result.get("task_id")
-            emit_time = result.get("emit_time", 0.0)
-            collect_time = result.get("collect_time", 0.0)
-            complete_time = result.get("complete_time", 0.0)
+            emit_time = result.get("task_emit_time", 0.0)
+            collect_time = result.get("task_collect_time", 0.0)
+            work_time = result.get("task_work_time", 0.0)
 
             comm_time = emit_time + collect_time
 
-            print(f"[INFO] Result {index} (task_id: {task_id}):")
-            print(f"  Emit Time    : {emit_time}")
-            print(f"  Collect Time : {collect_time}")
-            print(f"  Compute Time : {complete_time}")
-            print(f"[DEBUG] result: {result}")
-            if not result.get("QoS", False):
+            # print(f"[INFO] Result {index} (task_id: {task_id}):")
+            # print(f"  Emit Time    : {emit_time}")
+            # print(f"  Collect Time : {collect_time}")
+            # print(f"  Compute Time : {work_time}")
+            # print(f"[DEBUG] result: {result}")
+            if not result.get("task_QoS", False):
                 qos_exceed_count += 1
-            total_compute_time += complete_time
+            total_compute_time += work_time
             total_comm_time += comm_time
             total_emit_time += emit_time
             total_collect_time += collect_time
@@ -137,29 +144,23 @@ def monitor_queues(interval=5, total_tasks=1000, start_time=None, feedback_enabl
         config["control_syn_queue_name"],
         config["control_ack_queue_name"]
     ]
-    emitter_payload = {
+    payload = {
         "input_queue_name": config["input_queue_name"],
-        "worker_queue_name": config["worker_queue_name"]
-    }
-    worker_payload = {
         "worker_queue_name": config["worker_queue_name"],
         "result_queue_name": config["result_queue_name"],
+        "output_queue_name": config["output_queue_name"],
         "control_syn_queue_name": config["control_syn_queue_name"],
-        "control_ack_queue_name": config["control_ack_queue_name"]
-    }
-    collector_payload = {
+        "control_ack_queue_name": config["control_ack_queue_name"],
         "collector_feedback_flag": False if not feedback_enabled else True,
-        "input_queue_name": config["input_queue_name"],
-        "result_queue_name": config["result_queue_name"],
-        "output_queue_name": config["output_queue_name"]
     }
+
     redis_client = init_redis_client_with_retry()
 
     print("\n[INFO] Starting Redis queue monitoring...")
 
     end_time = None
-    warm_up_enabled = True
-    warm_up_interval = 30  # seconds
+    warm_up_enabled = False #True
+    warm_up_interval = 5  # seconds
     last_warm_up_time = time.time()
 
     while True:
@@ -176,21 +177,26 @@ def monitor_queues(interval=5, total_tasks=1000, start_time=None, feedback_enabl
         # Warm-up conditionally based on queue contents
         if warm_up_enabled and now - last_warm_up_time >= warm_up_interval:
             try:
-                if redis_client.llen(config["input_queue_name"]) > 0:
-                    print("[WARM-UP] Invoking emitter (input queue not empty)...")
-                    invoke_function_async("emitter", emitter_payload)
+                input_queue_lenght = redis_client.llen(config["input_queue_name"])
+                worker_queue_length = redis_client.llen(config["worker_queue_name"])
+                result_queue_length = redis_client.llen(config["result_queue_name"])
 
-                if redis_client.llen(config["worker_queue_name"]) > 0:
+                if input_queue_lenght > 0:
+                    print("[WARM-UP] Invoking emitter (input queue not empty)...")
+                    invoke_function_async("emitter", payload)
+
+                if worker_queue_length > 0:
                     print("[WARM-UP] Invoking worker(s) (worker queue not empty)...")
                     for _ in range(replicas):
-                        invoke_function_async("worker", worker_payload)
+                        invoke_function_async("worker", payload)
 
-                if redis_client.llen(config["result_queue_name"]) > 0:
+                if result_queue_length > 0:
                     print("[WARM-UP] Invoking collector (result queue not empty)...")
-                    invoke_function_async("collector", collector_payload)
+                    invoke_function_async("collector", payload)
             except Exception as e:
                 print(f"[WARM-UP] Error: {e}")
             last_warm_up_time = now
+            warm_up_enabled = False  # Disable warm-up after first run
 
         total_results = analyze_output_queue(redis_client, total_tasks)
 
@@ -212,7 +218,8 @@ def main():
     parser = argparse.ArgumentParser(description="Workflow Controller for AI Task Processing")
     parser.add_argument('--mode', choices=['pipeline', 'farm'], required=True, help='Select execution mode')
     parser.add_argument('--feedback', action=argparse.BooleanOptionalAction, help='Enable collector feedback')
-    parser.add_argument('--tasks', type=int, default=1000, help='Number of tasks to generate')
+    parser.add_argument('--tasks', type=int, default=100, help='Number of tasks to generate')
+    parser.add_argument('--cycles', type=int, default=2, help='Number of cycles to generate tasks')
     parser.add_argument('--workers', type=int, default=1, help='Number of workers (used only in farm mode)')
 
     args = parser.parse_args()
@@ -228,21 +235,18 @@ def main():
     time.sleep(10)
 
     # Step 3: Start task generator asynchronously
-    run_script("task_generator.py", [str(args.tasks)])
+    run_script("task_generator.py", [str(args.tasks), str(args.cycles), "True" if args.feedback else "False"])
 
-    # Step 4: Start emitter
-    run_script("emitter_init.py")
-
-    # Step 5: Start workers and collector based on mode
+    # Step 4: Start workers and collector based on mode
     if args.mode == "pipeline":
-        run_script("worker_init.py", ["1"])
-        run_script("collector_init.py", ["True" if args.feedback else "False"])
+        init_pipeline("True" if args.feedback else "False")
     elif args.mode == "farm":
-        run_script("worker_init.py", [str(args.workers)])
-        run_script("collector_init.py", ["True" if args.feedback else "False"])
+        init_farm(int(args.workers), "True" if args.feedback else "False")
 
-    # Step 6: Begin monitoring queues
-    monitor_queues(interval=5, total_tasks=args.tasks, start_time=program_start_time, feedback_enabled=args.feedback)
+    # Step 5: Begin monitoring queues
+    total_tasks = int(args.tasks) * int(args.cycles)  # Assuming args.cycles cycles of tasks
+    print(f"[INFO] Monitoring queues for {total_tasks} tasks across {int(args.cycles)} cycles.")
+    monitor_queues(interval=3, total_tasks=total_tasks, start_time=program_start_time, feedback_enabled=args.feedback)
 
 
 if __name__ == "__main__":
