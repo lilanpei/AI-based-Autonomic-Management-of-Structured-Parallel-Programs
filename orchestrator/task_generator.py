@@ -157,7 +157,7 @@ def main():
     except ValueError as ve:
         print(f"[ERROR] Invalid task number: {ve}", file=sys.stderr)
         sys.exit(1)
-
+    print(f"[INFO] Generating {num_tasks} tasks across {num_cycles} cycles with feedback={feedback_flag}")
     config = get_config()
     payload = {
         "input_queue_name": config["input_queue_name"],
@@ -166,7 +166,7 @@ def main():
         "output_queue_name": config["output_queue_name"],
         "control_syn_queue_name": config["control_syn_queue_name"],
         "control_ack_queue_name": config["control_ack_queue_name"],
-        "collector_feedback_flag": False if not feedback_flag else True,
+        "collector_feedback_flag": feedback_flag,
     }
 
     try:

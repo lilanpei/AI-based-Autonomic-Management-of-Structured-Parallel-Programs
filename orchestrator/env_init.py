@@ -1,7 +1,12 @@
 import sys
 import time
 import redis
-from utilities import get_config, init_redis_client, clear_queues, scale_function_deployment, restart_function
+from utilities import (
+    get_config, init_redis_client,
+    clear_queues,
+    scale_function_deployment,
+    restart_function
+)
 
 
 def init_redis_connection():

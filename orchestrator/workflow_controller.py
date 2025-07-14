@@ -151,7 +151,7 @@ def monitor_queues(interval=5, total_tasks=1000, start_time=None, feedback_enabl
         "output_queue_name": config["output_queue_name"],
         "control_syn_queue_name": config["control_syn_queue_name"],
         "control_ack_queue_name": config["control_ack_queue_name"],
-        "collector_feedback_flag": False if not feedback_enabled else True,
+        "collector_feedback_flag": feedback_enabled,
     }
 
     redis_client = init_redis_client_with_retry()
@@ -200,7 +200,7 @@ def monitor_queues(interval=5, total_tasks=1000, start_time=None, feedback_enabl
 
         total_results = analyze_output_queue(redis_client, total_tasks)
 
-        if total_results == total_tasks and start_time and end_time is None:
+        if total_results >= total_tasks and start_time and end_time is None:
             end_time = time.time()
             duration = end_time - start_time
             print(f"\n[TIMER] All {total_tasks} tasks completed.")
@@ -235,18 +235,20 @@ def main():
     time.sleep(10)
 
     # Step 3: Start task generator asynchronously
-    run_script("task_generator.py", [str(args.tasks), str(args.cycles), "True" if args.feedback else "False"])
+    feedback_flag = True if args.feedback else False
+    print(f"[INFO] Starting task generator with {args.tasks} tasks and {args.cycles} cycles with feedback={feedback_flag}")
+    run_script("task_generator.py", [str(args.tasks), str(args.cycles), str(feedback_flag)])
 
     # Step 4: Start workers and collector based on mode
     if args.mode == "pipeline":
-        init_pipeline("True" if args.feedback else "False")
+        init_pipeline(feedback_flag)
     elif args.mode == "farm":
-        init_farm(int(args.workers), "True" if args.feedback else "False")
+        init_farm(int(args.workers), feedback_flag)
 
     # Step 5: Begin monitoring queues
     total_tasks = int(args.tasks) * int(args.cycles)  # Assuming args.cycles cycles of tasks
     print(f"[INFO] Monitoring queues for {total_tasks} tasks across {int(args.cycles)} cycles.")
-    monitor_queues(interval=3, total_tasks=total_tasks, start_time=program_start_time, feedback_enabled=args.feedback)
+    monitor_queues(interval=3, total_tasks=total_tasks, start_time=program_start_time, feedback_enabled=feedback_flag)
 
 
 if __name__ == "__main__":

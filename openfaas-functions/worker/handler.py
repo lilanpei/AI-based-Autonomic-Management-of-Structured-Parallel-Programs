@@ -23,8 +23,17 @@ def parse_request_body(event):
             raise ValueError("Empty request body")
         return body
     except (json.JSONDecodeError, TypeError, ValueError) as e:
-        print(f"ERROR: {e} - Raw Body: {str(event.body)[:512]}", file=sys.stderr)
-        return None
+        raise ValueError(f"ERROR: {e} - Raw Body: {str(event.body)[:512]}", file=sys.stderr)
+
+def safe_redis_call(func):
+    try:
+        return func()
+    except redis.exceptions.ConnectionError as e:
+        print(f"[ERROR] Redis connection error: {e}. Retrying...")
+        time.sleep(5)
+        global redisClient
+        redisClient = init_redis_client()
+        return func()
 
 def async_function(func, *args, **kwargs):
     """
@@ -69,23 +78,12 @@ def invoke_function_async(function_name, payload, gateway_url="http://gateway.op
     except requests.exceptions.RequestException as e:
         print(f"[ERROR] Async invocation failed: {e}", file=sys.stderr)
 
-def safe_redis_call(func):
-    try:
-        return func()
-    except redis.exceptions.ConnectionError as e:
-        print(f"[ERROR] Redis connection error: {e}. Retrying...")
-        time.sleep(5)
-        global redisClient
-        redisClient = init_redis_client()
-        return func()
-
 def fetch_control_message(redis_client, control_queue):
     try:
         control_raw = safe_redis_call(lambda: redis_client.rpop(control_queue))
         return json.loads(control_raw) if control_raw else None
     except Exception as e:
-        print(f"[ERROR] Failed to parse control message: {e}")
-        return None
+        raise ValueError(f"[ERROR] Failed to parse control message: {e}")
 
 def prepare_matrices(task):
     task_data, task_size = task.get("task_data"), task.get("task_data_size")
@@ -117,6 +115,7 @@ def handle(event, context):
 
     worker_q, result_q = body.get('worker_queue_name'), body.get('result_queue_name')
     control_syn_q, control_ack_q = body.get('control_syn_queue_name'), body.get('control_ack_queue_name')
+    print(f"[DEBUG] Worker received body: {body}")
 
     if not all([worker_q, result_q, control_syn_q, control_ack_q]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
@@ -155,7 +154,7 @@ def handle(event, context):
         if not raw_task:
             print(f"[INFO] No task found in '{worker_q}', waiting for tasks...")
             # time.sleep(5)
-            # invoke_function_async("worker", body)
+            invoke_function_async("worker", body)
             # continue # break
         else:
             task = json.loads(raw_task)

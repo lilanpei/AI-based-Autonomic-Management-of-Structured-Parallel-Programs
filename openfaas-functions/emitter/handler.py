@@ -22,8 +22,7 @@ def parse_request_body(event):
             raise ValueError("Empty request body")
         return body
     except (json.JSONDecodeError, TypeError, ValueError) as e:
-        print(f"ERROR: {e} - Raw Body: {str(event.body)[:512]}", file=sys.stderr)
-        return None
+        raise ValueError(f"ERROR: {e} - Raw Body: {str(event.body)[:512]}", file=sys.stderr)
 
 def safe_redis_call(func):
     try:
@@ -101,8 +100,7 @@ def extract_task(raw_task):
             "task_emit_time":  now - task.get('task_gen_timestamp'),
         }
     except (json.JSONDecodeError, ValueError) as e:
-        print(f"ERROR: Malformed task: {e} - Raw: {raw_task[:256]}", file=sys.stderr)
-        return None
+        raise ValueError(f"ERROR: Malformed task: {e} - Raw: {raw_task[:256]}", file=sys.stderr)
 
 def handle(event, context):
     print(f"[INFO] Emitter invoked at {time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -119,6 +117,7 @@ def handle(event, context):
         return {"statusCode": 400, "body": "Invalid JSON in request body."}
 
     input_q, worker_q = body.get('input_queue_name'), body.get('worker_queue_name')
+    print(f"[DEBUG] Emitter received body: {body}")
 
     if not all([input_q, worker_q]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
@@ -138,7 +137,7 @@ def handle(event, context):
         if not raw_task:
             print(f"[INFO] No task in '{input_q}', waiting for tasks...")
             # time.sleep(5)
-            # invoke_function_async("emitter", body)
+            invoke_function_async("emitter", body)
             # continue # break
         else:
             task = extract_task(raw_task)

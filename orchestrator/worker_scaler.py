@@ -139,7 +139,7 @@ def main():
         "output_queue_name": config["output_queue_name"],
         "control_syn_queue_name": config["control_syn_queue_name"],
         "control_ack_queue_name": config["control_ack_queue_name"],
-        "collector_feedback_flag": False if not feedback_flag else True,
+        "collector_feedback_flag": feedback_flag,
     }
 
     current_replicas = get_current_worker_replicas()
