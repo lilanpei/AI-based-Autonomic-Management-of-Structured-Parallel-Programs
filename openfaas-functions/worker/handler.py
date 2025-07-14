@@ -144,6 +144,7 @@ def handle(event, context):
 
             safe_redis_call(lambda: redisClient.lpush(control_ack_q, json.dumps(ack_msg)))
             print(f"[INFO] Sent ACK for control message: {ack_msg}")
+            time.sleep(10)  # wait for ACK to propagate
             return {
                 "statusCode": 200,
                 "body": f"Worker pod {os.environ.get('HOSTNAME')} acknowledged scale down."

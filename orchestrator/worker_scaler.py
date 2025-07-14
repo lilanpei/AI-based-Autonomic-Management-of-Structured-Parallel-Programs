@@ -32,7 +32,7 @@ def parse_args():
         print("ERROR: scale_delta must be one of +2, +1, 0, -1, -2")
         sys.exit(1)
 
-    return int(delta_str)
+    return int(delta_str), feedback_flag
 
 
 def get_redis_client_with_retry(retries=3, delay=5):
@@ -58,8 +58,8 @@ def scale_up(current, delta, payload):
     scale_function_deployment(new_replicas)
     time.sleep(5)
 
-    for _ in range(new_replicas):
-        invoke_function_async("worker", payload)
+    # for _ in range(new_replicas):
+    #     invoke_function_async("worker", payload)
 
 
 def scale_down(current, delta, config, payload):
@@ -95,6 +95,8 @@ def scale_down(current, delta, config, payload):
 
         try:
             msg = json.loads(msg_raw)
+            # compensate for the original task invocation signal
+            invoke_function_async("worker", payload)
             if msg.get("type") == "SCALE_DOWN" and msg.get("action") == "ACK":
                 pod_name = msg.get("pod_name")
                 acked_pods.append(pod_name)
@@ -123,7 +125,7 @@ def scale_down(current, delta, config, payload):
 
 
 def main():
-    delta = parse_args()
+    delta, feedback_flag = parse_args()
     config = get_config()
 
     if delta == 0:
