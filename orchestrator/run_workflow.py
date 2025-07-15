@@ -53,7 +53,7 @@ def run_commands_with_logs():
             "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
         },
         {
-            "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=queue-worker", "-f"],
+            "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=queue-worker", "-f", "--max-log-requests=34"],
             "log_file": f"{log_dir}/logs_queue-worker_{worker_suffix}_{timestamp}.txt"
         },
         {
@@ -61,7 +61,7 @@ def run_commands_with_logs():
             "log_file": f"{log_dir}/logs_collector_{worker_suffix}_{timestamp}.txt"
         },
         {
-            "cmd": ["kubectl", "logs", "-n", "openfaas-fn", "-l", "faas_function=worker", "-f"],
+            "cmd": ["kubectl", "logs", "-n", "openfaas-fn", "-l", "faas_function=worker", "-f", "--max-log-requests=32"],
             "log_file": f"{log_dir}/logs_worker_{worker_suffix}_{timestamp}.txt"
         },
         {
