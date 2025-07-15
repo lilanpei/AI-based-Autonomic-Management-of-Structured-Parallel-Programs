@@ -93,7 +93,7 @@ def generate_and_push_tasks(num_tasks, redis_client, input_queue, payload):
 
         success = push_task_to_queue(redis_client, input_queue, task_json, i)
 
-        invoke_function_async("emitter", payload)
+        # invoke_function_async("emitter", payload)
         # invoke_function_async("worker", payload)
         # invoke_function_async("collector", payload)
 

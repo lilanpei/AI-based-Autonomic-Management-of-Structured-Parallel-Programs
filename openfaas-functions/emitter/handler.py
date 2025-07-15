@@ -122,44 +122,44 @@ def handle(event, context):
     if not all([input_q, worker_q]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
-    # tasks_generated = 0
-    # iteration_end = None
+    tasks_generated = 0
+    iteration_end = None
 
-    # while True:
-    print("------------------------------")
-    iteration_start = time.time()
-    # if iteration_end:
-    #     print(f"[INFO] Time since last iteration: {iteration_start - iteration_end:.2f} sec")
+    while True:
+        print("------------------------------")
+        iteration_start = time.time()
+        if iteration_end:
+            print(f"[INFO] Time since last iteration: {iteration_start - iteration_end:.2f} sec")
 
-    try:
-        raw_task = safe_redis_call(lambda: redisClient.rpop(input_q))
+        try:
+            raw_task = safe_redis_call(lambda: redisClient.rpop(input_q))
 
-        if not raw_task:
-            print(f"[INFO] No task in '{input_q}', waiting for tasks...")
-            # time.sleep(5)
-            invoke_function_async("emitter", body)
-            # continue # break
-        else:
-            task = extract_task(raw_task)
+            if not raw_task:
+                print(f"[INFO] No task in '{input_q}', waiting for tasks...")
+                time.sleep(5)
+                # invoke_function_async("emitter", body)
+                continue # break
+            else:
+                task = extract_task(raw_task)
 
-            safe_redis_call(lambda: redisClient.lpush(worker_q, json.dumps(task)))
-            invoke_function_async("worker", body)
-            print(f"[INFO] Pushed task {task['task_id']} to '{worker_q}'")
+                safe_redis_call(lambda: redisClient.lpush(worker_q, json.dumps(task)))
+                # invoke_function_async("worker", body)
+                print(f"[INFO] Pushed task {task['task_id']} to '{worker_q}'")
 
-            # tasks_generated += 1
-            # if tasks_generated % 100 == 0:
-            #     print(f"[INFO] Generated {tasks_generated} tasks")
+                tasks_generated += 1
+                if tasks_generated % 100 == 0:
+                    print(f"[INFO] Generated {tasks_generated} tasks")
 
-        iteration_end = time.time()
-        print(f"[INFO] Iteration completed in {iteration_end - iteration_start:.2f}s")
+            iteration_end = time.time()
+            print(f"[INFO] Iteration completed in {iteration_end - iteration_start:.2f}s")
 
-    except Exception as e:
-        print(f"ERROR: Unexpected error: {e}", file=sys.stderr)
-        # break
-        return {
-            "statusCode": 500,
-            "body": f"Unexpected error: {e}"
-        }
+        except Exception as e:
+            print(f"ERROR: Unexpected error: {e}", file=sys.stderr)
+            # break
+            return {
+                "statusCode": 500,
+                "body": f"Unexpected error: {e}"
+            }
 
     return {
         "statusCode": 200,

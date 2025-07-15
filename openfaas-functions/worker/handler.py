@@ -120,83 +120,83 @@ def handle(event, context):
     if not all([worker_q, result_q, control_syn_q, control_ack_q]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
-    # tasks_processed = 0
-    # iteration_end = None
+    tasks_processed = 0
+    iteration_end = None
 
-    # while True:
-    print("------------------------------")
-    iteration_start = time.time()
-    # if iteration_end:
-    #     print(f"[INFO] Time since last iteration: {iteration_start - iteration_end:.2f} sec")
+    while True:
+        print("------------------------------")
+        iteration_start = time.time()
+        if iteration_end:
+            print(f"[INFO] Time since last iteration: {iteration_start - iteration_end:.2f} sec")
 
-    try:
-        control_msg = fetch_control_message(redisClient, control_syn_q)
-        if control_msg and control_msg.get("type") == "SCALE_DOWN" and control_msg.get("action") == "SYN":
-            ack_msg = {
-                "type": "SCALE_DOWN",
-                "action": "ACK",
-                "ack_timestamp": time.time(),
-                "task_id": control_msg.get("task_id"),
-                "pod_name": os.environ.get("HOSTNAME"),
-                "message": "Worker pod is exiting as instructed."
-            }
+        try:
+            control_msg = fetch_control_message(redisClient, control_syn_q)
+            if control_msg and control_msg.get("type") == "SCALE_DOWN" and control_msg.get("action") == "SYN":
+                ack_msg = {
+                    "type": "SCALE_DOWN",
+                    "action": "ACK",
+                    "ack_timestamp": time.time(),
+                    "task_id": control_msg.get("task_id"),
+                    "pod_name": os.environ.get("HOSTNAME"),
+                    "message": "Worker pod is exiting as instructed."
+                }
 
-            safe_redis_call(lambda: redisClient.lpush(control_ack_q, json.dumps(ack_msg)))
-            print(f"[INFO] Sent ACK for control message: {ack_msg}")
-            time.sleep(10)  # wait for ACK to propagate
+                safe_redis_call(lambda: redisClient.lpush(control_ack_q, json.dumps(ack_msg)))
+                print(f"[INFO] Sent ACK for control message: {ack_msg}")
+                time.sleep(10)  # wait for ACK to propagate
+                return {
+                    "statusCode": 200,
+                    "body": f"Worker pod {os.environ.get('HOSTNAME')} acknowledged scale down."
+                }
+
+            raw_task = safe_redis_call(lambda: redisClient.rpop(worker_q))
+
+            if not raw_task:
+                print(f"[INFO] No task found in '{worker_q}', waiting for tasks...")
+                time.sleep(5)
+                # invoke_function_async("worker", body)
+                continue # break
+            else:
+                task = json.loads(raw_task)
+                if task.get("task_application") != "matrix_multiplication":
+                    raise ValueError("Unsupported task application")
+
+                task_id = task.get("task_id")
+                matrix_a, matrix_b = prepare_matrices(task)
+                result_matrix = np.dot(matrix_a, matrix_b)
+                time.sleep(2)  # Simulate processing delay
+                now = time.time()
+                emit_ts = task.get("task_emit_timestamp")
+                result = {
+                    "task_id": task_id,
+                    "task_result_data": None,
+                    "task_application": task.get("task_application"),
+                    "task_gen_timestamp": task.get("task_gen_timestamp"),
+                    "task_deadline": task.get("task_deadline"),
+                    "task_output_size": result_matrix.shape,
+                    "task_emit_time": task.get("task_emit_time"),
+                    "task_emit_timestamp" : emit_ts,
+                    "task_work_time": now - emit_ts,
+                    "task_work_timestamp": now
+                }
+                safe_redis_call(lambda: redisClient.lpush(result_q, json.dumps(result)))
+                # invoke_function_async("collector", body)
+                print(f"[INFO] Processed task {task_id} and pushed result to '{result_q}'")
+
+            tasks_processed += 1
+            if tasks_processed % 50 == 0:
+                print(f"[INFO] Processed {tasks_processed} tasks")
+
+            iteration_end = time.time()
+            print(f"[INFO] Iteration completed in {iteration_end - iteration_start:.2f}s")
+
+        except Exception as e:
+            print(f"[ERROR] Failed to process task: {e}", file=sys.stderr)
+            # break
             return {
-                "statusCode": 200,
-                "body": f"Worker pod {os.environ.get('HOSTNAME')} acknowledged scale down."
+                "statusCode": 500,
+                "body": f"Failed to process task: {e}"
             }
-
-        raw_task = safe_redis_call(lambda: redisClient.rpop(worker_q))
-
-        if not raw_task:
-            print(f"[INFO] No task found in '{worker_q}', waiting for tasks...")
-            # time.sleep(5)
-            invoke_function_async("worker", body)
-            # continue # break
-        else:
-            task = json.loads(raw_task)
-            if task.get("task_application") != "matrix_multiplication":
-                raise ValueError("Unsupported task application")
-
-            task_id = task.get("task_id")
-            matrix_a, matrix_b = prepare_matrices(task)
-            result_matrix = np.dot(matrix_a, matrix_b)
-            time.sleep(2)  # Simulate processing delay
-            now = time.time()
-            emit_ts = task.get("task_emit_timestamp")
-            result = {
-                "task_id": task_id,
-                "task_result_data": None,
-                "task_application": task.get("task_application"),
-                "task_gen_timestamp": task.get("task_gen_timestamp"),
-                "task_deadline": task.get("task_deadline"),
-                "task_output_size": result_matrix.shape,
-                "task_emit_time": task.get("task_emit_time"),
-                "task_emit_timestamp" : emit_ts,
-                "task_work_time": now - emit_ts,
-                "task_work_timestamp": now
-            }
-            safe_redis_call(lambda: redisClient.lpush(result_q, json.dumps(result)))
-            invoke_function_async("collector", body)
-            print(f"[INFO] Processed task {task_id} and pushed result to '{result_q}'")
-
-        # tasks_processed += 1
-        # if tasks_processed % 50 == 0:
-        #     print(f"[INFO] Processed {tasks_processed} tasks")
-
-        iteration_end = time.time()
-        print(f"[INFO] Iteration completed in {iteration_end - iteration_start:.2f}s")
-
-    except Exception as e:
-        print(f"[ERROR] Failed to process task: {e}", file=sys.stderr)
-        # break
-        return {
-            "statusCode": 500,
-            "body": f"Failed to process task: {e}"
-        }
 
     return {
         "statusCode": 200,

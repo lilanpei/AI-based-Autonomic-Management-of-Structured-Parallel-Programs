@@ -136,7 +136,7 @@ def feedback_task_generation(result, redisClient, input_q, body):
         "task_deadline": deadline_for_matrix(result["task_output_size"][0])  # seconds
     }
     safe_redis_call(lambda: redisClient.lpush(input_q, json.dumps(feedback_task)))
-    invoke_function_async("emitter", body)
+    # invoke_function_async("emitter", body)
     print(f"[INFO] Feedback task generated: {feedback_task['task_id']} for result {result['task_id']}")
 
 def handle(event, context):
@@ -160,45 +160,45 @@ def handle(event, context):
     if not all([input_q, result_q, output_q, feedback_flag is not None]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
-    # num_results = 0
-    # iteration_end = None
+    num_results = 0
+    iteration_end = None
 
-    # while True:
-    print("------------------------------")
-    iteration_start = time.time()
-    # if iteration_end:
-    #     print(f"[INFO] Time since last iteration: {iteration_start - iteration_end:.2f} sec")
-    try:
-        raw_result = safe_redis_call(lambda: redisClient.rpop(result_q))
+    while True:
+        print("------------------------------")
+        iteration_start = time.time()
+        if iteration_end:
+            print(f"[INFO] Time since last iteration: {iteration_start - iteration_end:.2f} sec")
+        try:
+            raw_result = safe_redis_call(lambda: redisClient.rpop(result_q))
 
-        if not raw_result:
-            print(f"[INFO] No result in '{result_q}', waiting for results...")
-            # time.sleep(5)
-            invoke_function_async("emitter", body)
-            # continue # break
-        else:
-            # Fetch and parse results
-            result = extract_result(raw_result)
-            safe_redis_call(lambda: redisClient.lpush(output_q, json.dumps(result)))
+            if not raw_result:
+                print(f"[INFO] No result in '{result_q}', waiting for results...")
+                time.sleep(5)
+                # invoke_function_async("emitter", body)
+                continue # break
+            else:
+                # Fetch and parse results
+                result = extract_result(raw_result)
+                safe_redis_call(lambda: redisClient.lpush(output_q, json.dumps(result)))
 
-            # Feedback task generation
-            print(f"[DEBUG] Feedback flag: {feedback_flag}, Input queue: {input_q}")
-            if feedback_flag and input_q:
-                print(f"[INFO] Feedback : Generating task from result {result['task_id']}")
-                feedback_task_generation(result, redisClient, input_q, body)
+                # Feedback task generation
+                print(f"[DEBUG] Feedback flag: {feedback_flag}, Input queue: {input_q}")
+                if feedback_flag and input_q:
+                    print(f"[INFO] Feedback : Generating task from result {result['task_id']}")
+                    feedback_task_generation(result, redisClient, input_q, body)
 
-            print(f"[INFO] Processed result {result['task_id']} from '{result_q}' and pushed to '{output_q}'")
+                print(f"[INFO] Processed result {result['task_id']} from '{result_q}' and pushed to '{output_q}'")
 
-        iteration_end = time.time()
-        print(f"[INFO] Iteration completed in {iteration_end - iteration_start:.2f} seconds.")
+            iteration_end = time.time()
+            print(f"[INFO] Iteration completed in {iteration_end - iteration_start:.2f} seconds.")
 
-    except Exception as e:
-        print(f"ERROR: Unexpected error: {e}", file=sys.stderr)
-        # break
-        return {
-            "statusCode": 500,
-            "body": f"Unexpected error: {e}"
-        }
+        except Exception as e:
+            print(f"ERROR: Unexpected error: {e}", file=sys.stderr)
+            # break
+            return {
+                "statusCode": 500,
+                "body": f"Unexpected error: {e}"
+            }
 
     return {
         "statusCode": 200,
