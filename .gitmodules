@@ -1,6 +1,7 @@
-[submodule "orchestrator/faas-netes"]
-	path = orchestrator/faas-netes
-	url = https://github.com/lilanpei/faas-netes.git
-[submodule "orchestrator/faas"]
-	path = orchestrator/faas
-	url = https://github.com/lilanpei/faas.git
+[submodule "faas-netes"]
+    path = faas-netes
+    url = https://github.com/lilanpei/faas-netes.git
+
+[submodule "faas"]
+    path = faas
+    url = https://github.com/lilanpei/faas.git
