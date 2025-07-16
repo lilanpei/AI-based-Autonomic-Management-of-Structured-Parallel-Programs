@@ -5,6 +5,8 @@ import time
 import redis
 import requests
 from threading import Thread
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 redisClient = None
 
@@ -29,7 +31,7 @@ def safe_redis_call(func):
         return func()
     except redis.exceptions.ConnectionError as e:
         print(f"[ERROR] Redis connection error: {e}. Retrying...")
-        time.sleep(5)
+        # time.sleep(5)
         global redisClient
         redisClient = init_redis_client()
         return func()
@@ -103,7 +105,8 @@ def extract_task(raw_task):
         raise ValueError(f"ERROR: Malformed task: {e} - Raw: {raw_task[:256]}", file=sys.stderr)
 
 def handle(event, context):
-    print(f"[INFO] Emitter invoked at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    now = datetime.now(ZoneInfo("Europe/Rome"))
+    print(f"\n[Emitter] Invoked at {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     global redisClient
     if redisClient is None:
         try:
@@ -136,7 +139,7 @@ def handle(event, context):
 
             if not raw_task:
                 print(f"[INFO] No task in '{input_q}', waiting for tasks...")
-                time.sleep(5)
+                # time.sleep(5)
                 # invoke_function_async("emitter", body)
                 continue # break
             else:

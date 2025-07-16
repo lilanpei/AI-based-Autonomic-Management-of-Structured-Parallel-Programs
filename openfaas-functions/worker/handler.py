@@ -6,6 +6,8 @@ import redis
 import requests
 import numpy as np
 from threading import Thread
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 redisClient = None
 
@@ -30,7 +32,7 @@ def safe_redis_call(func):
         return func()
     except redis.exceptions.ConnectionError as e:
         print(f"[ERROR] Redis connection error: {e}. Retrying...")
-        time.sleep(5)
+        # time.sleep(5)
         global redisClient
         redisClient = init_redis_client()
         return func()
@@ -100,7 +102,8 @@ def prepare_matrices(task):
     return matrix_a, matrix_b
 
 def handle(event, context):
-    print(f"[INFO] Worker invoked at {time.strftime('%Y-%m-%d %H:%M:%S')} on pod {os.environ.get('HOSTNAME')}")
+    now = datetime.now(ZoneInfo("Europe/Rome"))
+    print(f"\n[Worker] Invoked at {now.strftime('%Y-%m-%d %H:%M:%S %Z')} on pod {os.environ.get('HOSTNAME')}")
     global redisClient
     if redisClient is None:
         try:
@@ -143,7 +146,7 @@ def handle(event, context):
 
                 safe_redis_call(lambda: redisClient.lpush(control_ack_q, json.dumps(ack_msg)))
                 print(f"[INFO] Sent ACK for control message: {ack_msg}")
-                time.sleep(10)  # wait for ACK to propagate
+                # time.sleep(10)  # wait for ACK to propagate
                 return {
                     "statusCode": 200,
                     "body": f"Worker pod {os.environ.get('HOSTNAME')} acknowledged scale down."
@@ -153,7 +156,7 @@ def handle(event, context):
 
             if not raw_task:
                 print(f"[INFO] No task found in '{worker_q}', waiting for tasks...")
-                time.sleep(5)
+                # time.sleep(5)
                 # invoke_function_async("worker", body)
                 continue # break
             else:

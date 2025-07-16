@@ -9,7 +9,10 @@ from utilities import (
     send_control_messages,
     delete_pod_by_name,
     invoke_function_async,
-    get_worker_pod_names
+    get_worker_pod_names,
+    get_redis_client_with_retry,
+    scale_queue_worker,
+    get_queue_worker_replicas
 )
 
 
@@ -35,20 +38,6 @@ def parse_args():
     return int(delta_str), feedback_flag
 
 
-def get_redis_client_with_retry(retries=3, delay=5):
-    """
-    Attempts to connect to Redis with retry logic.
-    """
-    for attempt in range(retries):
-        try:
-            return init_redis_client()
-        except Exception as e:
-            print(f"[ERROR] Redis connection failed (Attempt {attempt + 1}/{retries}): {e}")
-            time.sleep(delay)
-    print("[FATAL] Could not connect to Redis after multiple attempts.")
-    sys.exit(1)
-
-
 def scale_up(current, delta, payload):
     """
     Scales up worker pods and deploys new functions.
@@ -56,11 +45,11 @@ def scale_up(current, delta, payload):
     new_replicas = current + delta
     print(f"[INFO] Scaling up from {current} to {new_replicas} replicas...")
     scale_function_deployment(new_replicas)
-    time.sleep(5)
+    # time.sleep(5)
 
-    # for _ in range(new_replicas):
-    #     invoke_function_async("worker", payload)
-
+    for _ in range(delta):
+        invoke_function_async("worker", payload)
+    return new_replicas
 
 def scale_down(current, delta, config, payload):
     """
@@ -69,17 +58,11 @@ def scale_down(current, delta, config, payload):
     redis_client = get_redis_client_with_retry()
     control_syn_q = config["control_syn_queue_name"]
     control_ack_q = config["control_ack_queue_name"]
-    warm_up_enabled = False  # Set to True if warm-up is needed
     new_replicas = max(current + delta, 1)
     count = current - new_replicas
 
     print(f"[INFO] Preparing to scale down from {current} to {new_replicas} replicas...")
     print(f"[INFO] Sending {count} control requests...")
-
-    # Ensure workers are listening
-    if warm_up_enabled:
-        for _ in range(current):
-            invoke_function_async("worker", payload)
 
     # Send SCALE_DOWN control messages
     send_control_messages(redis_client, control_syn_q, count)
@@ -96,7 +79,6 @@ def scale_down(current, delta, config, payload):
         try:
             msg = json.loads(msg_raw)
             # compensate for the original task invocation signal
-            invoke_function_async("worker", payload)
             if msg.get("type") == "SCALE_DOWN" and msg.get("action") == "ACK":
                 pod_name = msg.get("pod_name")
                 acked_pods.append(pod_name)
@@ -122,7 +104,7 @@ def scale_down(current, delta, config, payload):
     for pod in remaining_pods:
         if pod not in acked_pods:
             print(f"[OK] Pod '{pod}' preserved.")
-
+    return new_replicas
 
 def main():
     delta, feedback_flag = parse_args()
@@ -146,17 +128,19 @@ def main():
     print(f"[INFO] Current replicas: {current_replicas}")
 
     if delta > 0:
-        scale_up(current_replicas, delta, payload)
+        new_replicas = scale_up(current_replicas, delta, payload)
     else:
         if current_replicas <= 1:
             print("[INFO] Only one replica present; cannot scale down further.")
         else:
-            scale_down(current_replicas, delta, config, payload)
+            new_replicas = scale_down(current_replicas, delta, config, payload)
 
+    scale_queue_worker(replicas=new_replicas)
     print("[INFO] Finalizing scaling...")
     time.sleep(5)
-    final_count = get_current_worker_replicas()
-    print(f"[INFO] Replicas now: {final_count}")
+    current_worker_replicas = get_current_worker_replicas()
+    current_queue_worker_replicas = get_queue_worker_replicas()
+    print(f"[INFO] Current Worker Replicas: {current_worker_replicas}, Queue Worker Replicas: {current_queue_worker_replicas}")
 
 
 if __name__ == "__main__":

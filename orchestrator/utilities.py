@@ -49,6 +49,19 @@ def init_redis_client():
         print(f"[ERROR] Redis initialization failed: {e}", file=sys.stderr)
         sys.exit(1)
 
+def get_redis_client_with_retry(retries=3, delay=5):
+    """
+    Attempts to connect to Redis with retry logic.
+    """
+    for attempt in range(retries):
+        try:
+            return init_redis_client()
+        except Exception as e:
+            print(f"[ERROR] Redis connection failed (Attempt {attempt + 1}/{retries}): {e}")
+            time.sleep(delay)
+    print("[FATAL] Could not connect to Redis after multiple attempts.")
+    sys.exit(1)
+
 def generate_matrix(size):
     """Generate a square matrix of random floats."""
     return np.random.rand(size, size).tolist()
@@ -74,28 +87,28 @@ def clear_queues(redis_client=None, queue_names=None):
         except redis.exceptions.ConnectionError as e:
             print(f"[ERROR] Redis connection failed: {e}", file=sys.stderr)
 
-def scale_function_deployment(replica_count, deployment_name="worker", namespace="openfaas-fn"):
+def scale_function_deployment(replica_count, apps_v1_api=None, deployment_name="worker", namespace="openfaas-fn"):
     """Scale a Kubernetes deployment."""
-    try:
-        config.load_incluster_config()
-    except:
+    if apps_v1_api is None:
         try:
-            config.load_kube_config()
-        except Exception as e:
-            print(f"[ERROR] Kubernetes config load failed: {e}", file=sys.stderr)
-            sys.exit(1)
-
-    api = client.AppsV1Api()
+            config.load_incluster_config()
+        except:
+            try:
+                config.load_kube_config()
+            except Exception as e:
+                print(f"[ERROR] Kubernetes config load failed: {e}", file=sys.stderr)
+                sys.exit(1)
+        apps_v1_api = client.AppsV1Api()
     body = {"spec": {"replicas": replica_count}}
 
     try:
-        api.patch_namespaced_deployment_scale(name=deployment_name, namespace=namespace, body=body)
+        apps_v1_api.patch_namespaced_deployment_scale(name=deployment_name, namespace=namespace, body=body)
         print(f"[INFO] Scaled '{deployment_name}' to {replica_count} replicas.")
     except ApiException as e:
         print(f"[ERROR] Initial scaling failed: {e}", file=sys.stderr)
-        time.sleep(5)
+        # time.sleep(5)
         try:
-            api.patch_namespaced_deployment_scale(name=deployment_name, namespace=namespace, body=body)
+            apps_v1_api.patch_namespaced_deployment_scale(name=deployment_name, namespace=namespace, body=body)
             print(f"[INFO] Retry succeeded: scaled deployment.")
         except ApiException as e:
             print(f"[CRITICAL] Retry failed: {e}", file=sys.stderr)
@@ -154,11 +167,19 @@ def restart_function(function_name):
     except subprocess.CalledProcessError as e:
         print(f"[ERROR] Restart failed: {e}", file=sys.stderr)
 
-def get_current_worker_replicas(namespace="openfaas-fn", deployment_name="worker"):
+def get_current_worker_replicas(apps_v1_api=None, namespace="openfaas-fn", deployment_name="worker"):
     """Return current number of worker replicas."""
-    config.load_kube_config()
-    apps_v1 = client.AppsV1Api()
-    deployment = apps_v1.read_namespaced_deployment(deployment_name, namespace)
+    if apps_v1_api is None:
+        try:
+            config.load_incluster_config()
+        except:
+            try:
+                config.load_kube_config()
+            except Exception as e:
+                print(f"[ERROR] Kubernetes config load failed: {e}", file=sys.stderr)
+                sys.exit(1)
+        apps_v1_api = client.AppsV1Api()
+    deployment = apps_v1_api.read_namespaced_deployment(deployment_name, namespace)
     return deployment.spec.replicas
 
 def send_control_messages(redis_client, control_syn_q, count):
@@ -176,7 +197,7 @@ def send_control_messages(redis_client, control_syn_q, count):
             print(f"[INFO] Sent control message to '{control_syn_q}'")
         except redis.exceptions.ConnectionError as e:
             print(f"[ERROR] Redis connection error: {e}. Retrying...", file=sys.stderr)
-            time.sleep(5)
+            # time.sleep(5)
             try:
                 redis_client = init_redis_client()
                 redis_client.lpush(control_syn_q, json.dumps(message))
@@ -184,21 +205,37 @@ def send_control_messages(redis_client, control_syn_q, count):
             except Exception as e:
                 print(f"[CRITICAL] Retry failed: {e}", file=sys.stderr)
 
-def delete_pod_by_name(pod_name, namespace="openfaas-fn"):
+def delete_pod_by_name(pod_name, core_v1_api=None, namespace="openfaas-fn"):
     """Delete a pod by name."""
-    config.load_kube_config()
-    v1 = client.CoreV1Api()
+    if core_v1_api is None:
+        try:
+            config.load_incluster_config()
+        except:
+            try:
+                config.load_kube_config()
+            except Exception as e:
+                print(f"[ERROR] Kubernetes config load failed: {e}", file=sys.stderr)
+                sys.exit(1)
+        core_v1_api = client.CoreV1Api()
     try:
-        v1.delete_namespaced_pod(name=pod_name, namespace=namespace, body=client.V1DeleteOptions())
+        core_v1_api.delete_namespaced_pod(name=pod_name, namespace=namespace, body=client.V1DeleteOptions())
         print(f"[INFO] Deleted pod '{pod_name}'")
     except ApiException as e:
         print(f"[ERROR] Failed to delete pod '{pod_name}': {e}", file=sys.stderr)
 
-def get_worker_pod_names(namespace="openfaas-fn", label_selector="faas_function=worker"):
+def get_worker_pod_names(core_v1_api=None, namespace="openfaas-fn", label_selector="faas_function=worker"):
     """Get a list of worker pod names."""
-    config.load_kube_config()
-    v1 = client.CoreV1Api()
-    pods = v1.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
+    if core_v1_api is None:
+        try:
+            config.load_incluster_config()
+        except:
+            try:
+                config.load_kube_config()
+            except Exception as e:
+                print(f"[ERROR] Kubernetes config load failed: {e}", file=sys.stderr)
+                sys.exit(1)
+        core_v1_api = client.CoreV1Api()
+    pods = core_v1_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
     return [pod.metadata.name for pod in pods.items]
 
 def init_pipeline(feedback_flag):
@@ -211,7 +248,7 @@ def init_pipeline(feedback_flag):
     config = get_config()
 
     # Scale worker deployment to 1 replica
-    scale_function_deployment(1, deployment_name="worker", namespace="openfaas-fn")
+    scale_function_deployment(1, apps_v1_api=None, deployment_name="worker", namespace="openfaas-fn")
 
     payload = {
         "input_queue_name": config["input_queue_name"],
@@ -226,6 +263,9 @@ def init_pipeline(feedback_flag):
     invoke_function_async("emitter", payload)
     invoke_function_async("worker", payload)
     invoke_function_async("collector", payload)
+    scale_queue_worker(3)
+    queue_worker_replicas = get_queue_worker_replicas()
+    print(f"[INFO] Queue Worker Replicas for pipeline: {queue_worker_replicas}")
 
 def init_farm(replicas, feedback_flag):
     """
@@ -237,7 +277,7 @@ def init_farm(replicas, feedback_flag):
     config = get_config()
 
     # Scale worker deployment to replicas
-    scale_function_deployment(replicas, deployment_name="worker", namespace="openfaas-fn")
+    scale_function_deployment(replicas, apps_v1_api=None, deployment_name="worker", namespace="openfaas-fn")
 
     payload = {
         "input_queue_name": config["input_queue_name"],
@@ -255,3 +295,148 @@ def init_farm(replicas, feedback_flag):
         invoke_function_async("worker", payload)
 
     invoke_function_async("collector", payload)
+    scale_queue_worker(replicas+2)
+    queue_worker_replicas = get_queue_worker_replicas()
+    print(f"[INFO] Queue Worker Replicas for farm: {queue_worker_replicas}")
+
+def restart_all_functions():
+    """
+    Restarts all the functions (emitter, worker, collector).
+    """
+    for fn in ["emitter", "worker", "collector"]:
+        restart_function(fn)
+    print("[INFO] Waiting for function deployments to stabilize...")
+
+
+def scale_deployments_to_single_replica():
+    """
+    Scales down the emitter, worker, and collector functions to 1 replica each.
+    """
+    for fn in ["emitter", "worker", "collector"]:
+        scale_function_deployment(1, None, fn, "openfaas-fn")
+        print(f"[INFO] Scaled down {fn} function deployment to 1 replica.")
+
+
+def clear_all_queues(redis_client):
+    """
+    Clears all Redis queues before generating tasks.
+
+    Args:
+        redis_client (redis.Redis): Redis client instance.
+    """
+    clear_queues(redis_client, None)
+    print("[INFO] Cleared all Redis queues.")
+
+
+def initialize_environment():
+    """
+    Orchestrates environment initialization:
+    - Loads config
+    - Connects to Redis
+    - Scales deployments
+    - Clears queues
+    """
+    config = get_config()
+    redis_client = get_redis_client_with_retry()
+    scale_deployments_to_single_replica()
+    clear_all_queues(redis_client)
+    print("[INFO] Environment initialization complete.")
+    return config, redis_client
+
+def run_script(script_name, args=[]):
+    """
+    Asynchronously runs the specified script with the provided arguments.
+
+    Args:
+        script_name (str): The script to run.
+        args (list): List of arguments to pass to the script.
+    """
+    cmd = ["python", script_name] + [str(arg) for arg in args]
+    print(f"[ASYNC RUNNING] {' '.join(cmd)}")
+    subprocess.Popen(cmd)
+
+def monitor_worker_replicas():
+    """
+    Monitors the current number of worker replicas.
+    """
+    try:
+        replicas = get_current_worker_replicas()
+        print(f"\n[WORKER STATUS]")
+        print(f"  Current worker replicas: {replicas}")
+    except Exception as e:
+        print(f"[WARNING] Could not retrieve worker replicas: {e}")
+    return replicas
+
+def scale_queue_worker(replicas, apps_v1_api=None, namespace="openfaas"):
+    """
+    Scales the queue-worker deployment to the specified number of replicas.
+    Args:
+        replicas (int): Number of replicas to scale to.
+        apps_v1_api (client.AppsV1Api): Optional pre-initialized API client.
+        namespace (str): Kubernetes namespace where the queue-worker is deployed.
+    Returns:
+        client.V1Scale: The scale object representing the new state.
+    """
+    if apps_v1_api is None:
+        try:
+            config.load_incluster_config()
+        except:
+            try:
+                config.load_kube_config()
+            except Exception as e:
+                print(f"[ERROR] Kubernetes config load failed: {e}", file=sys.stderr)
+                sys.exit(1)
+        apps_v1_api = client.AppsV1Api()
+
+    deployment_name = "queue-worker"  # Name of the deployment
+    body = {
+        "spec": {
+            "replicas": replicas
+        }
+    }
+
+    try:
+        response = apps_v1_api.patch_namespaced_deployment_scale(
+            name=deployment_name,
+            namespace=namespace,
+            body=body
+        )
+        print(f"[INFO] Scaled '{deployment_name}' to {replicas} replicas.")
+        return response
+    except client.exceptions.ApiException as e:
+        print(f"[ERROR] Failed to scale deployment: {e}")
+        raise
+
+
+def get_queue_worker_replicas(apps_v1_api=None, namespace="openfaas"):
+    """
+    Returns the current number of replicas for the queue-worker deployment.
+
+    Args:
+        namespace (str): The Kubernetes namespace where queue-worker is deployed.
+
+    Returns:
+        int: Number of desired replicas.
+    """
+    if apps_v1_api is None:
+        try:
+            config.load_incluster_config()
+        except:
+            try:
+                config.load_kube_config()
+            except Exception as e:
+                print(f"[ERROR] Kubernetes config load failed: {e}", file=sys.stderr)
+                sys.exit(1)
+        apps_v1_api = client.AppsV1Api()
+
+    try:
+        deployment = apps_v1_api.read_namespaced_deployment(
+            name="queue-worker",
+            namespace=namespace
+        )
+        replicas = deployment.spec.replicas
+        print(f"[INFO] queue-worker replicas: {replicas}")
+        return replicas
+    except client.exceptions.ApiException as e:
+        print(f"[ERROR] Could not get deployment: {e}")
+        raise

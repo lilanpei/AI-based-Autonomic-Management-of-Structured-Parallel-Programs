@@ -7,6 +7,8 @@ import redis
 import requests
 import numpy as np
 from threading import Thread
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 redisClient = None
 
@@ -44,7 +46,7 @@ def safe_redis_call(func):
         return func()
     except redis.exceptions.ConnectionError as e:
         print(f"[ERROR] Redis connection error: {e}. Retrying...")
-        time.sleep(5)
+        # time.sleep(5)
         global redisClient
         redisClient = init_redis_client()
         return func()
@@ -140,7 +142,8 @@ def feedback_task_generation(result, redisClient, input_q, body):
     print(f"[INFO] Feedback task generated: {feedback_task['task_id']} for result {result['task_id']}")
 
 def handle(event, context):
-    print(f"\n[Collector] Invoked at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    now = datetime.now(ZoneInfo("Europe/Rome"))
+    print(f"\n[Collector] Invoked at {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     global redisClient
     if redisClient is None:
         try:
@@ -173,7 +176,7 @@ def handle(event, context):
 
             if not raw_result:
                 print(f"[INFO] No result in '{result_q}', waiting for results...")
-                time.sleep(5)
+                # time.sleep(5)
                 # invoke_function_async("emitter", body)
                 continue # break
             else:

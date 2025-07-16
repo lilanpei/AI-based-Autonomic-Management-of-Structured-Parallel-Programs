@@ -138,9 +138,7 @@ def task_producer(requests_in_window, redis_client, input_queue, payload, window
         time.sleep(remaining_time)
 
 def main():
-    # if len(sys.argv) < 2:
-    #     print("Usage: python task_generator.py <number_of_tasks_to_generate>")
-    #     sys.exit(1)
+    task_genration_start_time = time.time()
     if len(sys.argv) != 4:
         print("Usage: python task_generator.py <number_of_tasks_to_generate> <num_cycles> <feedback_enabled>")
         print("Example: python task_generator.py 100 10 False")
@@ -188,8 +186,8 @@ def main():
         print(f"\n[CYCLE {cycle+1}] Generating {num_tasks} tasks over 30s...")
         task_producer(num_tasks, redis_client, config['input_queue_name'], payload, window_duration=30)
 
-    print("[INFO] Task generation completed across all cycles.")
-    # generate_and_push_tasks(num_tasks, redis_client, config['input_queue_name'], payload)
+    task_generation_end_time = time.time()
+    print(f"[INFO] Task generation completed across all cycles in {task_generation_end_time - task_genration_start_time:.2f} seconds.")
 
 if __name__ == "__main__":
     main()
