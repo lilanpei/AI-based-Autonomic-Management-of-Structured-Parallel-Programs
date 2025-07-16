@@ -1,9 +1,9 @@
-[submodule "faas-netes"]
-    path = faas-netes
+[submodule "openfaas/faas-netes"]
+	path = openfaas/faas-netes
     url = https://github.com/lilanpei/faas-netes.git
     branch = MaxReplicas
 
-[submodule "faas"]
-    path = faas
+[submodule "openfaas/faas"]
+	path = openfaas/faas
     url = https://github.com/lilanpei/faas.git
     branch = MaxReplicas
