@@ -35,10 +35,10 @@ helm repo update
 ```bash
 helm show values openfaas/openfaas > openfaas-custom-values.yaml
 ```
-- Edit openfaas-custom-values.yaml to:
-    - Use your custom image tags
-    - Disable Alertmanager
-    - Increase the number of queue workers (recommended at least 1 for each function)
+Edit openfaas-custom-values.yaml to:
+- Use your custom image tags
+- Disable Alertmanager
+- Increase the number of queue workers (recommended at least 1 for each function)
 ### Key Edits (example):
 ```bash
 gateway:
