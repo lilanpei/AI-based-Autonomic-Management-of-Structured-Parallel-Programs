@@ -83,6 +83,7 @@ def clear_queues(redis_client=None, queue_names=None):
     for name in queue_names:
         try:
             count = redis_client.delete(name)
+            time.sleep(0.1)  # Allow time for Redis to process
             print(f"[INFO] Cleared Redis Queue '{name}' ({count} items removed).")
         except redis.exceptions.ConnectionError as e:
             print(f"[ERROR] Redis connection failed: {e}", file=sys.stderr)
@@ -113,24 +114,6 @@ def scale_function_deployment(replica_count, apps_v1_api=None, deployment_name="
         except ApiException as e:
             print(f"[CRITICAL] Retry failed: {e}", file=sys.stderr)
 
-def invoke_function_sync(function_name, payload, gateway_url="http://127.0.0.1:8080"):
-    """Asynchronously invoke OpenFaaS function."""
-    url = f"{gateway_url}/sync-function/{function_name}"
-    headers = {"Content-Type": "application/json"}
-
-    try:
-        response = requests.post(url, json=payload, headers=headers)
-        if response.status_code == 200:
-            print(f"[INFO] Successfully invoked '{function_name}'")
-        else:
-            print(f"[INFO] Failed to invoke '{function_name}' - Status {response.status_code}")
-    except Exception as e:
-        print(f"[INFO] Error invoking '{function_name}': {e}")
-
-# def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080"):
-#     """Invoke OpenFaaS function asynchronously."""
-#     async_function((invoke_function_sync), function_name, payload, gateway_url)
-
 def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080"):
     """Asynchronously invoke OpenFaaS function."""
     url = f"{gateway_url}/async-function/{function_name}"
@@ -153,7 +136,7 @@ def async_function(func, *args, **kwargs):
         **kwargs: Keyword arguments for the function.
     """
     thread = Thread(target=func, args=args, kwargs=kwargs)
-    thread.daemon = True  # Optional: thread dies with the main program
+    # thread.daemon = True  # Optional: thread dies with the main program
     thread.start()
 
 def restart_function(function_name):
@@ -238,18 +221,23 @@ def get_worker_pod_names(core_v1_api=None, namespace="openfaas-fn", label_select
     pods = core_v1_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
     return [pod.metadata.name for pod in pods.items]
 
-def init_pipeline(feedback_flag):
+def init_pipeline(feedback_flag, config=None):
     """
     Initialize the pipeline by clearing queues and scaling deployments.
     """
     print("[INFO] Initializing pipeline...")
     print(f"[INFO] Feedback flag: {feedback_flag}")
 
-    config = get_config()
+    if not config:
+        config = get_config()
 
     # Scale worker deployment to 1 replica
     scale_function_deployment(1, apps_v1_api=None, deployment_name="worker", namespace="openfaas-fn")
-
+    time.sleep(5)  # Wait for deployment to stabilize
+    scale_queue_worker(3)
+    queue_worker_replicas = get_queue_worker_replicas()
+    print(f"[INFO] Queue Worker Replicas for pipeline: {queue_worker_replicas}")
+    time.sleep(5)  # Wait for queue worker to stabilize
     payload = {
         "input_queue_name": config["input_queue_name"],
         "worker_queue_name": config["worker_queue_name"],
@@ -261,24 +249,28 @@ def init_pipeline(feedback_flag):
     }
 
     invoke_function_async("emitter", payload)
+    time.sleep(3)
     invoke_function_async("worker", payload)
+    time.sleep(3)
     invoke_function_async("collector", payload)
-    scale_queue_worker(3)
-    queue_worker_replicas = get_queue_worker_replicas()
-    print(f"[INFO] Queue Worker Replicas for pipeline: {queue_worker_replicas}")
+    time.sleep(3)
 
-def init_farm(replicas, feedback_flag):
+def init_farm(replicas, feedback_flag, config=None):
     """
     Initialize the farm by clearing queues and scaling deployments.
     """
     print("[INFO] Initializing farm...")
     print(f"[INFO] Number of replicas: {replicas}, Feedback flag: {feedback_flag}")
-
-    config = get_config()
+    if config is None:
+        config = get_config()
 
     # Scale worker deployment to replicas
     scale_function_deployment(replicas, apps_v1_api=None, deployment_name="worker", namespace="openfaas-fn")
-
+    time.sleep(5)  # Wait for deployment to stabilize
+    scale_queue_worker(replicas+2)
+    queue_worker_replicas = get_queue_worker_replicas()
+    print(f"[INFO] Queue Worker Replicas for farm: {queue_worker_replicas}")
+    time.sleep(5)  # Wait for queue worker to stabilize
     payload = {
         "input_queue_name": config["input_queue_name"],
         "worker_queue_name": config["worker_queue_name"],
@@ -290,14 +282,13 @@ def init_farm(replicas, feedback_flag):
     }
 
     invoke_function_async("emitter", payload)
+    time.sleep(3)
 
     for i in range(replicas):
         invoke_function_async("worker", payload)
-
+        time.sleep(3)
     invoke_function_async("collector", payload)
-    scale_queue_worker(replicas+2)
-    queue_worker_replicas = get_queue_worker_replicas()
-    print(f"[INFO] Queue Worker Replicas for farm: {queue_worker_replicas}")
+    time.sleep(3)
 
 def restart_all_functions():
     """
@@ -337,9 +328,15 @@ def initialize_environment():
     - Clears queues
     """
     config = get_config()
+    time.sleep(1)  # Allow time for config to load
     redis_client = get_redis_client_with_retry()
+    time.sleep(1)  # Allow time for Redis connection
     scale_deployments_to_single_replica()
+    time.sleep(1)  # Allow time for deployments to stabilize
+    scale_queue_worker(1)
+    time.sleep(1)  # Allow time for queue worker to stabilize
     clear_all_queues(redis_client)
+    time.sleep(1)  # Allow time for queues to clear
     print("[INFO] Environment initialization complete.")
     return config, redis_client
 

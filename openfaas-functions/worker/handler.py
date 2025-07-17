@@ -3,20 +3,25 @@ import sys
 import json
 import time
 import redis
-import requests
 import numpy as np
-from threading import Thread
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 redisClient = None
 
 def init_redis_client():
-    return redis.Redis(
-        host=os.getenv('redis_hostname', 'redis-master.redis.svc.cluster.local'),
-        port=os.getenv('redis_port'),
-        decode_responses=True
-    )
+    """
+    Initializes a Redis client with fallback values.
+    Works for both local and in-cluster use.
+    """
+    host = os.getenv("REDIS_HOSTNAME", "redis-master.redis.svc.cluster.local")
+    port = int(os.getenv("REDIS_PORT", 6379))
+
+    try:
+        return redis.Redis(host=host, port=port, decode_responses=True)
+    except redis.exceptions.RedisError as e:
+        print(f"[ERROR] Redis initialization failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
 def parse_request_body(event):
     try:
@@ -36,49 +41,6 @@ def safe_redis_call(func):
         global redisClient
         redisClient = init_redis_client()
         return func()
-
-def async_function(func, *args, **kwargs):
-    """
-    Runs any function asynchronously with given arguments.
-
-    Args:
-        func (callable): The function to execute.
-        *args: Positional arguments for the function.
-        **kwargs: Keyword arguments for the function.
-    """
-    thread = Thread(target=func, args=args, kwargs=kwargs)
-    thread.daemon = True  # Optional: thread dies with the main program
-    thread.start()
-
-def invoke_function_sync(function_name, payload, gateway_url="http://gateway.openfaas.svc.cluster.local:8080"):
-    """Asynchronously invoke OpenFaaS function."""
-    url = f"{gateway_url}/sync-function/{function_name}"
-    headers = {"Content-Type": "application/json"}
-
-    try:
-        response = requests.post(url, json=payload, headers=headers)
-        if response.status_code == 200:
-            print(f"[WARM-UP] Successfully invoked '{function_name}'")
-        else:
-            print(f"[WARM-UP] Failed to invoke '{function_name}' - Status {response.status_code}")
-    except Exception as e:
-        print(f"[WARM-UP] Error invoking '{function_name}': {e}")
-
-# def invoke_function_async(function_name, payload, gateway_url="http://gateway.openfaas.svc.cluster.local:8080"):
-#     """Invoke OpenFaaS function asynchronously."""
-#     async_function((invoke_function_sync), function_name, payload, gateway_url)
-
-def invoke_function_async(function_name, payload, gateway_url="http://gateway.openfaas.svc.cluster.local:8080"):
-    """Asynchronously invoke OpenFaaS function."""
-    url = f"{gateway_url}/async-function/{function_name}"
-    headers = {"Content-Type": "application/json"}
-
-    try:
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        print(f"[INFO] Async invoked '{function_name}'")
-    except requests.exceptions.RequestException as e:
-        print(f"[ERROR] Async invocation failed: {e}", file=sys.stderr)
 
 def fetch_control_message(redis_client, control_queue):
     try:
@@ -104,6 +66,7 @@ def prepare_matrices(task):
 def handle(event, context):
     now = datetime.now(ZoneInfo("Europe/Rome"))
     print(f"\n[Worker] Invoked at {now.strftime('%Y-%m-%d %H:%M:%S %Z')} on pod {os.environ.get('HOSTNAME')}")
+    tasks_processed = 0
     global redisClient
     if redisClient is None:
         try:
@@ -123,14 +86,14 @@ def handle(event, context):
     if not all([worker_q, result_q, control_syn_q, control_ack_q]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
-    tasks_processed = 0
-    iteration_end = None
+    previous_iteration_start = None
 
     while True:
         print("------------------------------")
         iteration_start = time.time()
-        if iteration_end:
-            print(f"[INFO] Time since last iteration: {iteration_start - iteration_end:.2f} sec")
+        if previous_iteration_start:
+            print(f"[INFO] Iteration time: {iteration_start - previous_iteration_start:.2f} sec")
+        previous_iteration_start = iteration_start
 
         try:
             control_msg = fetch_control_message(redisClient, control_syn_q)
@@ -146,7 +109,6 @@ def handle(event, context):
 
                 safe_redis_call(lambda: redisClient.lpush(control_ack_q, json.dumps(ack_msg)))
                 print(f"[INFO] Sent ACK for control message: {ack_msg}")
-                # time.sleep(10)  # wait for ACK to propagate
                 return {
                     "statusCode": 200,
                     "body": f"Worker pod {os.environ.get('HOSTNAME')} acknowledged scale down."
@@ -155,12 +117,14 @@ def handle(event, context):
             raw_task = safe_redis_call(lambda: redisClient.rpop(worker_q))
 
             if not raw_task:
-                print(f"[INFO] No task found in '{worker_q}', waiting for tasks...")
-                # time.sleep(5)
-                # invoke_function_async("worker", body)
-                continue # break
+                # print(f"[INFO] No task found in '{worker_q}', waiting for tasks...")
+                time.sleep(1)
+                continue
             else:
+                now = datetime.now(ZoneInfo("Europe/Rome"))
+                print(f"\n[Worker] got task at {now.strftime('%Y-%m-%d %H:%M:%S %Z')} on pod {os.environ.get('HOSTNAME')}")
                 task = json.loads(raw_task)
+                tasks_processed += 1
                 if task.get("task_application") != "matrix_multiplication":
                     raise ValueError("Unsupported task application")
 
@@ -183,26 +147,17 @@ def handle(event, context):
                     "task_work_timestamp": now
                 }
                 safe_redis_call(lambda: redisClient.lpush(result_q, json.dumps(result)))
-                # invoke_function_async("collector", body)
-                print(f"[INFO] Processed task {task_id} and pushed result to '{result_q}'")
-
-            tasks_processed += 1
-            if tasks_processed % 50 == 0:
-                print(f"[INFO] Processed {tasks_processed} tasks")
-
-            iteration_end = time.time()
-            print(f"[INFO] Iteration completed in {iteration_end - iteration_start:.2f}s")
+                print(f"[INFO] Processed {tasks_processed} tasks from {worker_q} and pushed result to '{result_q}'")
 
         except Exception as e:
             print(f"[ERROR] Failed to process task: {e}", file=sys.stderr)
-            # break
             return {
                 "statusCode": 500,
                 "body": f"Failed to process task: {e}"
             }
+    print(f"[INFO] Worker processed {tasks_processed} tasks.")
 
     return {
         "statusCode": 200,
-        # "body": f"Worker processed {tasks_processed} tasks from '{worker_q}' to '{result_q}'"
         "body": f"Worker processed task from '{worker_q}' to '{result_q}'"
     }

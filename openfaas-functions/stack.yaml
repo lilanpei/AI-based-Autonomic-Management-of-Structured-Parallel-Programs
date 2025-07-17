@@ -10,14 +10,14 @@ functions:
     image: lilanpei/emitter:latest
     # image: $USERID/$IMAGE_NAME:$TAG
     environment:
-      read_timeout: 1h   # Time to read HTTP request
-      write_timeout: 1h  # Time to write HTTP response
-      exec_timeout: 1h   # Maximum execution time
+      read_timeout: 12h   # Time to read HTTP request
+      write_timeout: 12h  # Time to write HTTP response
+      exec_timeout: 12h   # Maximum execution time
       redis_hostname: "redis-master.redis.svc.cluster.local"
       redis_port: 6379
     annotations: # ESSENTIAL for a long-running worker
       com.openfaas.scale.min: "1"
-      com.openfaas.schedule: "*/1 * * * *"
+      com.openfaas.retry.attempts: "0"
 
   worker:
     lang: python3-http
@@ -25,14 +25,14 @@ functions:
     image: lilanpei/worker:latest
     # image: $USERID/$IMAGE_NAME:$TAG
     environment:
-      read_timeout: 1h   # Time to read HTTP request
-      write_timeout: 1h  # Time to write HTTP response
-      exec_timeout: 1h   # Maximum execution time
+      read_timeout: 12h   # Time to read HTTP request
+      write_timeout: 12h  # Time to write HTTP response
+      exec_timeout: 12h   # Maximum execution time
       redis_hostname: "redis-master.redis.svc.cluster.local"
       redis_port: 6379
     annotations: # ESSENTIAL for a long-running worker
       com.openfaas.scale.min: "1"
-      com.openfaas.schedule: "*/1 * * * *"
+      com.openfaas.retry.attempts: "0"
 
   collector:
     lang: python3-http
@@ -40,14 +40,14 @@ functions:
     image: lilanpei/collector:latest
     # image: $USERID/$IMAGE_NAME:$TAG
     environment:
-      read_timeout: 1h   # Time to read HTTP request
-      write_timeout: 1h  # Time to write HTTP response
-      exec_timeout: 1h   # Maximum execution time
+      read_timeout: 12h   # Time to read HTTP request
+      write_timeout: 12h  # Time to write HTTP response
+      exec_timeout: 12h   # Maximum execution time
       redis_hostname: "redis-master.redis.svc.cluster.local"
       redis_port: 6379
     annotations: # ESSENTIAL for a long-running worker
       com.openfaas.scale.min: "1"
-      com.openfaas.schedule: "*/1 * * * *"
+      com.openfaas.retry.attempts: "0"
 
 configuration:
   templates:

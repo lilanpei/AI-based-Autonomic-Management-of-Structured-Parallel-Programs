@@ -40,33 +40,33 @@ def run_commands_with_logs():
 
     # Define all commands except worker_scaler
     commands = [
+        # {
+        #     "cmd": ["kubectl", "logs", "-n", "openfaas", "deploy/nats"],
+        #     "log_file": f"{log_dir}/logs_nats_{worker_suffix}_{timestamp}.txt"
+        # },
+        # {
+        #     "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=gateway", "-f"],
+        #     "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
+        # },
         {
             "cmd": sys.argv[1:],
             "log_file": f"{log_dir}/logs_controller_{worker_suffix}_{timestamp}.txt"
-        },
-        {
-            "cmd": ["kubectl", "logs", "-n", "openfaas", "deploy/nats"],
-            "log_file": f"{log_dir}/logs_nats_{worker_suffix}_{timestamp}.txt"
-        },
-        {
-            "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=gateway", "-f"],
-            "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
-        },
-        {
-            "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=queue-worker", "-f", "--max-log-requests=34"],
-            "log_file": f"{log_dir}/logs_queue-worker_{worker_suffix}_{timestamp}.txt"
         },
         {
             "cmd": ["kubectl", "logs", "-n", "openfaas-fn", "-l", "faas_function=collector", "-f"],
             "log_file": f"{log_dir}/logs_collector_{worker_suffix}_{timestamp}.txt"
         },
         {
+            "cmd": ["kubectl", "logs", "-n", "openfaas-fn", "-l", "faas_function=emitter", "-f"],
+            "log_file": f"{log_dir}/logs_emitter_{worker_suffix}_{timestamp}.txt"
+        },
+        {
             "cmd": ["kubectl", "logs", "-n", "openfaas-fn", "-l", "faas_function=worker", "-f", "--max-log-requests=32"],
             "log_file": f"{log_dir}/logs_worker_{worker_suffix}_{timestamp}.txt"
         },
         {
-            "cmd": ["kubectl", "logs", "-n", "openfaas-fn", "-l", "faas_function=emitter", "-f"],
-            "log_file": f"{log_dir}/logs_emitter_{worker_suffix}_{timestamp}.txt"
+            "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=queue-worker", "-f", "--max-log-requests=34"],
+            "log_file": f"{log_dir}/logs_queue-worker_{worker_suffix}_{timestamp}.txt"
         }
     ]
 
@@ -79,6 +79,8 @@ def run_commands_with_logs():
         print(f"Worker suffix: {worker_suffix}")
 
         # Start all regular commands
+        start_time = time.time()
+        print(f"[Workflow]---------------Start running workflow at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}---------------")
         for cmd_info in commands:
             with open(cmd_info["log_file"], "w") as log_file:
                 process = subprocess.Popen(
@@ -87,7 +89,7 @@ def run_commands_with_logs():
                     stderr=subprocess.STDOUT,
                     text=True
                 )
-                time.sleep(5)  # Ensure log file is created before appending
+                time.sleep(1)  # Ensure log file is created before appending
                 processes.append((process, cmd_info["cmd"], cmd_info["log_file"]))
                 print(f"Started: {' '.join(cmd_info['cmd'])} → {cmd_info['log_file']}")
 
@@ -100,6 +102,9 @@ def run_commands_with_logs():
             process.wait()
             if process.returncode == 0:
                 print(f"✅ Completed: {' '.join(cmd)}")
+                end_time = time.time()
+                print(f"[Workflow]---------------End running cmd: {cmd} at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}---------------")
+                print(f"[Workflow] Total time taken: {end_time - start_time:.2f} seconds for cmd {{cmd}}")
             else:
                 print(f"❌ Failed (exit {process.returncode}): {' '.join(cmd)} → {log_file}")
 

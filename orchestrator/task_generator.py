@@ -127,15 +127,19 @@ def task_producer(requests_in_window, redis_client, input_queue, payload, window
 
     total_elapsed = 0
     for i, delay in enumerate(inter_arrival_times):
+        before = time.time()
         Thread(target=generate_and_push_tasks, args=(1, redis_client, input_queue, payload)).start()
         print(f"[DEBUG] Scheduled task {i + 1}/{requests_in_window}, sleeping {delay}s...")
-        time.sleep(delay)
-        total_elapsed += delay
+        after = time.time()
+        adjusted_delay = max(0, delay - (after - before))  # Ensure non-negative sleep time
+        if adjusted_delay > 0:
+            time.sleep(adjusted_delay)
+        # total_elapsed += delay
 
-    remaining_time = window_duration - total_elapsed
-    if remaining_time > 0:
-        print(f"[DEBUG] Sleeping additional {remaining_time}s to finish the interval.")
-        time.sleep(remaining_time)
+    # remaining_time = window_duration - total_elapsed
+    # if remaining_time > 0:
+    #     print(f"[DEBUG] Sleeping additional {remaining_time}s to finish the interval.")
+    #     time.sleep(remaining_time)
 
 def main():
     task_genration_start_time = time.time()

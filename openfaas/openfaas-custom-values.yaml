@@ -72,9 +72,9 @@ gatewayPro:
 gateway:
   # image: ghcr.io/openfaas/gateway:0.27.12
   image: lilanpei/gateway:latest
-  readTimeout: "1m05s"
-  writeTimeout: "1m05s"
-  upstreamTimeout: "1m"  # Must be smaller than read/write_timeout
+  readTimeout: "12h"
+  writeTimeout: "12h"
+  upstreamTimeout: "12h"  # Must be smaller than read/write_timeout
   replicas: 1
   scaleFromZero: true
   # change the port when creating multiple releases in the same baremetal cluster
@@ -279,7 +279,7 @@ queueWorker:
   # Control HA of queue-worker
   replicas: 3
   queueGroup: "faas"
-  ackWait: "60s"
+  ackWait: "12h"  # Long enough to avoid redelivery
   resources:
     requests:
       memory: "120Mi"

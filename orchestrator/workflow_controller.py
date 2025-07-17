@@ -4,6 +4,7 @@ import sys
 import time
 import redis
 import json
+from threading import Thread
 from utilities import (
     get_config,
     init_redis_client,
@@ -14,7 +15,8 @@ from utilities import (
     invoke_function_async,
     initialize_environment,
     run_script,
-    monitor_worker_replicas
+    monitor_worker_replicas,
+    async_function
 )
 
 
@@ -87,7 +89,7 @@ def analyze_output_queue(redis_client, total_tasks):
     print(f"  Avg Communication   : {avg_comm_time:.4f} sec")
 
 
-def monitor_queues(interval=5, total_tasks=1000, program_start_time=None, task_generator_start_time=None, feedback_enabled=False, config=None, redis_client=None):
+def monitor_queues(interval=3, total_tasks=1000, program_start_time=None, feedback_enabled=False, config=None, redis_client=None):
     """
     Monitors Redis queues and provides periodic status updates on task progress.
 
@@ -95,13 +97,12 @@ def monitor_queues(interval=5, total_tasks=1000, program_start_time=None, task_g
         interval (int): The interval in seconds to wait between checks.
         total_tasks (int): The total number of tasks to be completed.
         program_start_time (float): The start time of program execution.
-        task_generator_start_time (float): The start time of the task generator.
         feedback_enabled (bool): Flag indicating whether feedback is enabled.
     """
     if not config:
         config = get_config()
     if not redis_client:
-        redis_client = init_redis_client_with_retry()
+        redis_client = get_redis_client_with_retry()
     QUEUE_NAMES = [
         config["input_queue_name"],
         config["worker_queue_name"],
@@ -129,7 +130,7 @@ def monitor_queues(interval=5, total_tasks=1000, program_start_time=None, task_g
         results = redis_client.lrange("output_queue", 0, -1)
         total_results = len(results)
 
-        if total_results >= total_tasks and program_start_time and task_generator_start_time and end_time is None:
+        if total_results >= total_tasks and program_start_time and end_time is None:
 
             end_time = time.time()
             for index, raw in enumerate(results):
@@ -142,10 +143,8 @@ def monitor_queues(interval=5, total_tasks=1000, program_start_time=None, task_g
 
             print(f"\n[TIMER] All {total_tasks} tasks completed.")
             print(f"[TIMER] End time recorded at {time.ctime(end_time)}")
-            print(f"[TIMER] Total environment initialization time: {task_generator_start_time - program_start_time:.2f} seconds")
             print(f"[TIMER] Total processing time start from monitoring: {end_time - monitoring_start_time:.2f} seconds")
-            print(f"[TIMER] Total processing time start from environment initialization: {end_time - program_start_time:.2f} seconds")
-            print(f"[TIMER] Total processing time start from task generation: {end_time - task_generator_start_time:.2f} seconds")
+            print(f"[TIMER] Total processing time start from program start: {end_time - program_start_time:.2f} seconds")
 
             if not feedback_enabled:
                 print("[INFO] Feedback disabled. Terminating program.")
@@ -164,6 +163,7 @@ def main():
 
     args = parser.parse_args()
     total_tasks = int(args.tasks) * int(args.cycles)  # Assuming args.cycles cycles of tasks
+    feedback_flag = True if args.feedback else False
     # Record start time
     program_start_time = time.time()
     print(f"[TIMER] Program started at {time.ctime(program_start_time)}")
@@ -173,7 +173,6 @@ def main():
     # time.sleep(10) # Give time for env to settle
 
     # Step 2: Start workers and collector based on mode
-    feedback_flag = True if args.feedback else False
     if args.mode == "pipeline":
         init_pipeline(feedback_flag)
     elif args.mode == "farm":
@@ -181,14 +180,19 @@ def main():
     # time.sleep(10) # Give time for env to settle
 
     # Step 3: Start task generator asynchronously
-    task_generator_start_time = time.time()
-    print(f"[INFO] Starting task generator with {args.tasks} tasks and {args.cycles} cycles with feedback={feedback_flag} at {time.ctime(task_generator_start_time)}")
+    now = time.time()
+    print(f"[INFO] Environment initialization time: {time.time() - program_start_time:.2f} seconds")
+    print(f"[INFO] Starting task generator with {args.tasks} tasks and {args.cycles} cycles with feedback={feedback_flag} at {time.ctime(now)}")
     run_script("task_generator.py", [str(args.tasks), str(args.cycles), str(feedback_flag)])
 
-    # Step 4: Begin monitoring queues
+    # Step 3: Begin monitoring queues
     print(f"[INFO] Monitoring queues for {total_tasks} tasks across {int(args.cycles)} cycles.")
-    monitor_queues(interval=3, total_tasks=total_tasks, program_start_time=program_start_time, task_generator_start_time=task_generator_start_time, feedback_enabled=feedback_flag, config=config, redis_client=redis_client)
-
+    # async_function((monitor_queues), interval=3, total_tasks=total_tasks, program_start_time=program_start_time, feedback_enabled=feedback_flag, config=config, redis_client=redis_client)
+    monitor_queues(interval=3, total_tasks=total_tasks, program_start_time=program_start_time, feedback_enabled=feedback_flag, config=config, redis_client=redis_client)
+    print("[INFO] Queue monitoring completed.")
+    print(f"[TIMER] Total program execution time: {time.time() - program_start_time:.2f} seconds")
+    print("[INFO] Workflow Controller execution completed.")
+    print("[INFO] Exiting program.")
 
 if __name__ == "__main__":
     main()
