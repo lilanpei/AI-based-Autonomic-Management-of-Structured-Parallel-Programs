@@ -8,6 +8,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 redisClient = None
+backoff_factor = 2
+retries = 10
 
 def init_redis_client():
     """
@@ -50,10 +52,17 @@ def safe_redis_call(func):
         return func()
     except redis.exceptions.ConnectionError as e:
         print(f"[ERROR] Redis connection error: {e}. Retrying...")
-        # time.sleep(5)
+        time.sleep(1)
         global redisClient
         redisClient = init_redis_client()
         return func()
+
+def fetch_control_message(redis_client, control_queue):
+    try:
+        control_raw = safe_redis_call(lambda: redis_client.rpop(control_queue))
+        return json.loads(control_raw) if control_raw else None
+    except Exception as e:
+        raise ValueError(f"[ERROR] Failed to parse control message: {e}")
 
 def extract_result(raw_result):
     try:
@@ -68,11 +77,13 @@ def extract_result(raw_result):
         deadline = result.get("task_deadline")
         work_ts = result.get("task_work_timestamp")
         gen_ts = result.get("task_gen_timestamp")
+        task_id = result.get("task_id")
+        print(f"[DEBUG] Extracted result for task {task_id}")
         now = time.time()
         deadline_met = (now - gen_ts) <= deadline
 
         return {
-            "task_id": result.get('task_id'),
+            "task_id": task_id,
             "task_application": result.get("task_application"),
             "task_gen_timestamp": gen_ts,
             "task_result_data": result.get("task_result_data"),
@@ -101,9 +112,25 @@ def feedback_task_generation(result, redisClient, input_q, body):
     safe_redis_call(lambda: redisClient.lpush(input_q, json.dumps(feedback_task)))
     print(f"[INFO] Feedback task generated: {feedback_task['task_id']} for result {result['task_id']}")
 
+def send_start_signal(redis_client, start_queue, pod_name, start_timestamp):
+    """
+    Sends a start signal to start queue.
+    """
+    start_signal = {
+        "type": "START",
+        "action": "SYNC",
+        "start_timestamp": start_timestamp.strftime('%Y-%m-%d %H:%M:%S %Z'),
+        "pod_name": pod_name,
+        "message": f"{pod_name} is ready to start processing tasks."
+    }
+
+    safe_redis_call(lambda: redisClient.lpush(start_queue, json.dumps(start_signal)))
+    print(f"[INFO] {pod_name} sent START signal: {start_signal}")
+
 def handle(event, context):
     now = datetime.now(ZoneInfo("Europe/Rome"))
-    print(f"\n[Collector] Invoked at {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    pod_name = os.environ.get("HOSTNAME")
+    print(f"\n[Collector] Invoked at {now.strftime('%Y-%m-%d %H:%M:%S %Z')} on pod {pod_name}")
     num_results = 0
     global redisClient
     if redisClient is None:
@@ -119,12 +146,17 @@ def handle(event, context):
 
     result_q, output_q = body.get('result_queue_name'), body.get("output_queue_name")
     input_q, feedback_flag = body.get('input_queue_name'), body.get("collector_feedback_flag")
+    control_syn_q, start_q = body.get('collector_control_syn_queue_name'), body.get('collector_start_queue_name')
     print(f"[DEBUG] Collector received body: {body}")
 
-    if not all([input_q, result_q, output_q, feedback_flag is not None]):
+    if not all([input_q, result_q, output_q, start_q, feedback_flag is not None]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
+    # send start signal to start queue
+    send_start_signal(redisClient, start_q, pod_name, now)
+
     previous_iteration_start = None
+    attempt = 0
 
     while True:
         print("------------------------------")
@@ -134,15 +166,32 @@ def handle(event, context):
         previous_iteration_start = iteration_start
 
         try:
+            control_msg = fetch_control_message(redisClient, control_syn_q)
+            if control_msg and control_msg.get("action") == "SYN" and control_msg.get("type") == "TEMINATE":
+                print(f"[INFO] Received TERMINATE control message: {control_msg}")
+                return {
+                    "statusCode": 200,
+                    "body": f"Collector pod {pod_name} acknowledged termination."
+                }
+
             raw_result = safe_redis_call(lambda: redisClient.rpop(result_q))
 
             if not raw_result:
-                print(f"[INFO] No result in '{result_q}', waiting for results...")
-                time.sleep(1)
+                attempt += 1
+                sleep_time = backoff_factor ** attempt
+                print(f"[INFO] No result found in '{result_q}' for {attempt} tries, waiting {sleep_time} seconds...")
+                time.sleep(sleep_time)
+                if attempt >= retries:
+                    print("[WARNING] No results found for a long time, exiting collector.")
+                    return {
+                        "statusCode": 200,
+                        "body": f"Collector pod {pod_name} exited due to inactivity."
+                    }
                 continue
             else:
+                attempt = 0
                 now = datetime.now(ZoneInfo("Europe/Rome"))
-                print(f"\n[Collector] got result at {now.strftime('%Y-%m-%d %H:%M:%S %Z')} on pod {os.environ.get('HOSTNAME')}")
+                print(f"\n[Collector] got result at {now.strftime('%Y-%m-%d %H:%M:%S %Z')} on pod {pod_name}")
                 # Fetch and parse results
                 result = extract_result(raw_result)
                 num_results += 1
@@ -153,7 +202,7 @@ def handle(event, context):
                     print(f"[INFO] Feedback : Generating task from result {result['task_id']}")
                     feedback_task_generation(result, redisClient, input_q, body)
 
-                # print(f"[Collector] Processed {num_results} results from '{result_q}' and pushed to '{output_q}'")
+                print(f"[Collector] Processed {num_results} results from '{result_q}' and pushed to '{output_q}'")
 
         except Exception as e:
             print(f"ERROR: Unexpected error: {e}", file=sys.stderr)
