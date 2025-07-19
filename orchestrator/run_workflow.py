@@ -6,29 +6,29 @@ import sys
 import time
 
 def parse_worker_count():
-    """Parse --workers argument from workflow_controller.py command"""
     parser = argparse.ArgumentParser()
     parser.add_argument('--workers', type=int, required=True)
     args, _ = parser.parse_known_args()
     return args.workers
 
 def run_worker_scaler_twice(log_file):
-    """Run worker_scaler.py twice, appending to same log file"""
-    with open(log_file, 'a') as f:  # 'a' mode for append
+    with open(log_file, 'a') as f:
         for run in [1, 2]:
             print(f"Running worker_scaler.py (run {run}) → {log_file}")
             cmd = ["python", "worker_scaler.py", "-2"]
-            process = subprocess.Popen(
-                cmd,
-                stdout=f,
-                stderr=subprocess.STDOUT,
-                text=True
-            )
+            process = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, text=True)
             process.wait()
             if process.returncode == 0:
                 print(f"✅ Completed worker_scaler.py run {run}")
             else:
                 print(f"❌ Failed worker_scaler.py run {run} (exit {process.returncode})")
+
+def get_xargs_log_cmd(function_name):
+    return [
+        "bash", "-c",
+        f"kubectl get pods -l faas_function={function_name} -n openfaas-fn -o name | "
+        f"xargs -P 34 -I{{}} kubectl logs {{}} -n openfaas-fn"
+    ]
 
 def run_commands_with_logs():
     worker_count = parse_worker_count()
@@ -38,73 +38,78 @@ def run_commands_with_logs():
     os.makedirs(log_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%H%M")
 
-    # Define all commands except worker_scaler
-    commands = [
-        # {
-        #     "cmd": ["kubectl", "logs", "-n", "openfaas", "deploy/nats"],
-        #     "log_file": f"{log_dir}/logs_nats_{worker_suffix}_{timestamp}.txt"
-        # },
-        # {
-        #     "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=gateway", "-f"],
-        #     "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
-        # },
+    controller_cmd = {
+        "cmd": sys.argv[1:],
+        "log_file": f"{log_dir}/logs_controller_{worker_suffix}_{timestamp}.txt"
+    }
+
+    other_cmds = [
         {
-            "cmd": sys.argv[1:],
-            "log_file": f"{log_dir}/logs_controller_{worker_suffix}_{timestamp}.txt"
+            "cmd": ["kubectl", "logs", "-n", "openfaas", "deploy/nats"],
+            "log_file": f"{log_dir}/logs_nats_{worker_suffix}_{timestamp}.txt"
         },
         {
-            "cmd": ["kubectl", "logs", "-n", "openfaas-fn", "-l", "faas_function=collector", "-f"],
+            "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=gateway", "-f"],
+            "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
+        },
+        {
+            "cmd": get_xargs_log_cmd("collector"),
             "log_file": f"{log_dir}/logs_collector_{worker_suffix}_{timestamp}.txt"
         },
         {
-            "cmd": ["kubectl", "logs", "-n", "openfaas-fn", "-l", "faas_function=emitter", "-f"],
+            "cmd": get_xargs_log_cmd("emitter"),
             "log_file": f"{log_dir}/logs_emitter_{worker_suffix}_{timestamp}.txt"
         },
         {
-            "cmd": ["kubectl", "logs", "-n", "openfaas-fn", "-l", "faas_function=worker", "-f", "--max-log-requests=32"],
+            "cmd": get_xargs_log_cmd("worker"),
             "log_file": f"{log_dir}/logs_worker_{worker_suffix}_{timestamp}.txt"
         },
         {
-            "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=queue-worker", "-f", "--max-log-requests=34"],
+            "cmd": [
+                "kubectl", "logs",
+                "-l", "app=queue-worker",
+                "-n", "openfaas",
+                "--timestamps",
+                "--max-log-requests=34"
+            ],
             "log_file": f"{log_dir}/logs_queue-worker_{worker_suffix}_{timestamp}.txt"
         }
     ]
 
     processes = []
-    run_worker_scale_down_enabled = False # True
+    run_worker_scale_down_enabled = False
     scaler_log = f"{log_dir}/logs_scaler_{worker_suffix}_{timestamp}.txt"
 
     try:
         print(f"Log directory: {log_dir}")
         print(f"Worker suffix: {worker_suffix}")
 
-        # Start all regular commands
         start_time = time.time()
         print(f"[Workflow]---------------Start running workflow at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}---------------")
-        for cmd_info in commands:
+
+        # Step 1: Run controller command for 300s
+        with open(controller_cmd["log_file"], "w") as log_file:
+            controller_proc = subprocess.Popen(controller_cmd["cmd"], stdout=log_file, stderr=subprocess.STDOUT, text=True)
+            processes.append((controller_proc, controller_cmd["cmd"], controller_cmd["log_file"]))
+            print(f"Started controller: {' '.join(controller_cmd['cmd'])} → {controller_cmd['log_file']}")
+            time.sleep(300)
+            print("[Workflow] 300 seconds passed — moving to other commands")
+
+        # Step 2: Run all other logging commands
+        for cmd_info in other_cmds:
             with open(cmd_info["log_file"], "w") as log_file:
-                process = subprocess.Popen(
-                    cmd_info["cmd"],
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    text=True
-                )
-                time.sleep(1)  # Ensure log file is created before appending
-                processes.append((process, cmd_info["cmd"], cmd_info["log_file"]))
+                proc = subprocess.Popen(cmd_info["cmd"], stdout=log_file, stderr=subprocess.STDOUT, text=True)
+                time.sleep(1)
+                processes.append((proc, cmd_info["cmd"], cmd_info["log_file"]))
                 print(f"Started: {' '.join(cmd_info['cmd'])} → {cmd_info['log_file']}")
 
-        # Run worker_scaler twice sequentially
         if run_worker_scale_down_enabled:
             run_worker_scaler_twice(scaler_log)
 
-        # Wait for other processes
         for process, cmd, log_file in processes:
             process.wait()
             if process.returncode == 0:
                 print(f"✅ Completed: {' '.join(cmd)}")
-                end_time = time.time()
-                print(f"[Workflow]---------------End running cmd: {cmd} at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}---------------")
-                print(f"[Workflow] Total time taken: {end_time - start_time:.2f} seconds for cmd {{cmd}}")
             else:
                 print(f"❌ Failed (exit {process.returncode}): {' '.join(cmd)} → {log_file}")
 
@@ -112,6 +117,7 @@ def run_commands_with_logs():
         print("\n🛑 KeyboardInterrupt: Terminating processes...")
         for process, _, _ in processes:
             process.terminate()
+        controller_proc.terminate()
         sys.exit(1)
 
 if __name__ == "__main__":

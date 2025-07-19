@@ -16,7 +16,8 @@ from utilities import (
     initialize_environment,
     run_script,
     monitor_worker_replicas,
-    async_function
+    async_function,
+    send_control_messages
 )
 
 
@@ -89,7 +90,7 @@ def analyze_output_queue(redis_client, total_tasks):
     print(f"  Avg Communication   : {avg_comm_time:.4f} sec")
 
 
-def monitor_queues(interval=3, total_tasks=1000, program_start_time=None, feedback_enabled=False, config=None, redis_client=None):
+def monitor_queues(interval=3, total_tasks=1000, program_start_time=None, task_generation_start_time=None, feedback_enabled=False, config=None, redis_client=None):
     """
     Monitors Redis queues and provides periodic status updates on task progress.
 
@@ -104,13 +105,18 @@ def monitor_queues(interval=3, total_tasks=1000, program_start_time=None, feedba
     if not redis_client:
         redis_client = get_redis_client_with_retry()
     QUEUE_NAMES = [
-        config["input_queue_name"],
-        config["worker_queue_name"],
-        config["result_queue_name"],
-        config["output_queue_name"],
-        config["control_syn_queue_name"],
-        config["control_ack_queue_name"]
-    ]
+            config.get("input_queue_name"),
+            config.get("worker_queue_name"),
+            config.get("result_queue_name"),
+            config.get("output_queue_name"),
+            config.get("emitter_control_syn_queue_name"),
+            config.get("worker_control_syn_queue_name"),
+            config.get("worker_control_ack_queue_name"),
+            config.get("collector_control_syn_queue_name"),
+            config.get("emitter_start_queue_name"),
+            config.get("worker_start_queue_name"),
+            config.get("collector_start_queue_name")
+        ]
 
     print("\n[INFO] Starting Redis queue monitoring...")
 
@@ -144,7 +150,20 @@ def monitor_queues(interval=3, total_tasks=1000, program_start_time=None, feedba
             print(f"\n[TIMER] All {total_tasks} tasks completed.")
             print(f"[TIMER] End time recorded at {time.ctime(end_time)}")
             print(f"[TIMER] Total processing time start from monitoring: {end_time - monitoring_start_time:.2f} seconds")
+            print(f"[TIMER] Total processing time start from task generation: {end_time - task_generation_start_time:.2f} seconds")
             print(f"[TIMER] Total processing time start from program start: {end_time - program_start_time:.2f} seconds")
+            # Send terminate control messages
+            message = {
+                "type": "TERMINATE",
+                "action": "SYN",
+                "message": "Terminate function from orchestrator",
+                "SYN_timestamp": time.strftime('%Y-%m-%d %H:%M:%S %Z', time.localtime(end_time))
+            }
+
+            send_control_messages(message, redis_client, config["emitter_control_syn_queue_name"], 1)
+            send_control_messages(message, redis_client, config["worker_control_syn_queue_name"], replicas)
+            send_control_messages(message, redis_client, config["collector_control_syn_queue_name"], 1)
+            print("[INFO] Termination control messages sent to all components.")
 
             if not feedback_enabled:
                 print("[INFO] Feedback disabled. Terminating program.")
@@ -170,13 +189,27 @@ def main():
 
     # Step 1: Initialize environment
     config, redis_client = initialize_environment()
-    # time.sleep(10) # Give time for env to settle
+    time.sleep(20) # Give time for env to settle
+    payload = {
+        "input_queue_name": config["input_queue_name"],
+        "worker_queue_name": config["worker_queue_name"],
+        "result_queue_name": config["result_queue_name"],
+        "output_queue_name": config["output_queue_name"],
+        "emitter_control_syn_queue_name": config["emitter_control_syn_queue_name"],
+        "worker_control_syn_queue_name": config["worker_control_syn_queue_name"],
+        "worker_control_ack_queue_name": config["worker_control_ack_queue_name"],
+        "collector_control_syn_queue_name": config["collector_control_syn_queue_name"],
+        "emitter_start_queue_name": config["emitter_start_queue_name"],
+        "worker_start_queue_name": config["worker_start_queue_name"],
+        "collector_start_queue_name": config["collector_start_queue_name"],
+        "collector_feedback_flag": feedback_flag
+    }
 
     # Step 2: Start workers and collector based on mode
     if args.mode == "pipeline":
-        init_pipeline(feedback_flag)
+        init_pipeline(redis_client, config, payload)
     elif args.mode == "farm":
-        init_farm(int(args.workers), feedback_flag)
+        init_farm(redis_client, config, int(args.workers), payload)
     # time.sleep(10) # Give time for env to settle
 
     # Step 3: Start task generator asynchronously
@@ -185,10 +218,11 @@ def main():
     print(f"[INFO] Starting task generator with {args.tasks} tasks and {args.cycles} cycles with feedback={feedback_flag} at {time.ctime(now)}")
     run_script("task_generator.py", [str(args.tasks), str(args.cycles), str(feedback_flag)])
 
-    # Step 3: Begin monitoring queues
+    # Step 4: Begin monitoring queues
     print(f"[INFO] Monitoring queues for {total_tasks} tasks across {int(args.cycles)} cycles.")
     # async_function((monitor_queues), interval=3, total_tasks=total_tasks, program_start_time=program_start_time, feedback_enabled=feedback_flag, config=config, redis_client=redis_client)
-    monitor_queues(interval=3, total_tasks=total_tasks, program_start_time=program_start_time, feedback_enabled=feedback_flag, config=config, redis_client=redis_client)
+    monitor_queues(interval=3, total_tasks=total_tasks, program_start_time=program_start_time, task_generation_start_time=now, feedback_enabled=feedback_flag, config=config, redis_client=redis_client)
+
     print("[INFO] Queue monitoring completed.")
     print(f"[TIMER] Total program execution time: {time.time() - program_start_time:.2f} seconds")
     print("[INFO] Workflow Controller execution completed.")

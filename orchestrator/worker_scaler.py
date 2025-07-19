@@ -9,7 +9,7 @@ from utilities import (
     send_control_messages,
     delete_pod_by_name,
     invoke_function_async,
-    get_worker_pod_names,
+    get_function_pod_names,
     get_redis_client_with_retry,
     scale_queue_worker,
     get_queue_worker_replicas
@@ -56,8 +56,8 @@ def scale_down(current, delta, config, payload):
     Scales down worker pods using control messages and ACKs.
     """
     redis_client = get_redis_client_with_retry()
-    control_syn_q = config["control_syn_queue_name"]
-    control_ack_q = config["control_ack_queue_name"]
+    control_syn_q = config["worker_control_syn_queue_name"]
+    control_ack_q = config["worker_control_ack_queue_name"]
     new_replicas = max(current + delta, 1)
     count = current - new_replicas
 
@@ -65,7 +65,13 @@ def scale_down(current, delta, config, payload):
     print(f"[INFO] Sending {count} control requests...")
 
     # Send SCALE_DOWN control messages
-    send_control_messages(redis_client, control_syn_q, count)
+    message = {
+        "type": "SCALE_DOWN",
+        "action": "SYN",
+        "message": "Scale down request from orchestrator",
+        "SYN_timestamp": time.time()
+    }
+    send_control_messages(message, redis_client, control_syn_q, count)
 
     # Wait for ACKs
     acked_pods = []
@@ -97,7 +103,7 @@ def scale_down(current, delta, config, payload):
     time.sleep(3)
 
     # Check pod consistency
-    remaining_pods = set(get_worker_pod_names())
+    remaining_pods = set(get_function_pod_names("worker"))
     for pod in acked_pods:
         if pod in remaining_pods:
             print(f"[ERROR] Pod '{pod}' was not deleted as expected!")
@@ -119,8 +125,13 @@ def main():
         "worker_queue_name": config["worker_queue_name"],
         "result_queue_name": config["result_queue_name"],
         "output_queue_name": config["output_queue_name"],
-        "control_syn_queue_name": config["control_syn_queue_name"],
-        "control_ack_queue_name": config["control_ack_queue_name"],
+        "emitter_control_syn_queue_name": config["emitter_control_syn_queue_name"],
+        "worker_control_syn_queue_name": config["worker_control_syn_queue_name"],
+        "worker_control_ack_queue_name": config["worker_control_ack_queue_name"],
+        "collector_control_syn_queue_name": config["collector_control_syn_queue_name"],
+        "emitter_start_queue_name": config["emitter_start_queue_name"],
+        "worker_start_queue_name": config["worker_start_queue_name"],
+        "collector_start_queue_name": config["collector_start_queue_name"],
         "collector_feedback_flag": feedback_flag,
     }
 

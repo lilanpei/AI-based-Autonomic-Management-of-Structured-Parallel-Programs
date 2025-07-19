@@ -6,7 +6,7 @@ import redis
 import random
 import numpy as np
 from threading import Thread
-from utilities import get_config, init_redis_client, generate_matrix, invoke_function_async
+from utilities import get_config, init_redis_client, generate_matrix
 
 def generate_task_payload(matrix_size):
     """
@@ -93,10 +93,6 @@ def generate_and_push_tasks(num_tasks, redis_client, input_queue, payload):
 
         success = push_task_to_queue(redis_client, input_queue, task_json, i)
 
-        # invoke_function_async("emitter", payload)
-        # invoke_function_async("worker", payload)
-        # invoke_function_async("collector", payload)
-
         if success:
             print(f"[INFO] Task {i}/{num_tasks}: size={json_size} bytes, matrix={matrix_size}x{matrix_size}")
             if i % 100 == 0 or i == num_tasks:
@@ -166,8 +162,13 @@ def main():
         "worker_queue_name": config["worker_queue_name"],
         "result_queue_name": config["result_queue_name"],
         "output_queue_name": config["output_queue_name"],
-        "control_syn_queue_name": config["control_syn_queue_name"],
-        "control_ack_queue_name": config["control_ack_queue_name"],
+        "emitter_control_syn_queue_name": config["emitter_control_syn_queue_name"],
+        "worker_control_syn_queue_name": config["worker_control_syn_queue_name"],
+        "worker_control_ack_queue_name": config["worker_control_ack_queue_name"],
+        "collector_control_syn_queue_name": config["collector_control_syn_queue_name"],
+        "emitter_start_queue_name": config["emitter_start_queue_name"],
+        "worker_start_queue_name": config["worker_start_queue_name"],
+        "collector_start_queue_name": config["collector_start_queue_name"],
         "collector_feedback_flag": feedback_flag,
     }
 
