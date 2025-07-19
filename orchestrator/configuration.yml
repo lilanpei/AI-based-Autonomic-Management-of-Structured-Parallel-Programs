@@ -4,5 +4,10 @@ input_queue_name: input_queue
 worker_queue_name: worker_queue
 result_queue_name: result_queue
 output_queue_name: output_queue
-control_syn_queue_name: control_syn_queue
-control_ack_queue_name: control_ack_queue
+emitter_control_syn_queue_name: emitter_control_syn_queue
+worker_control_syn_queue_name: worker_control_syn_queue
+worker_control_ack_queue_name: worker_control_ack_queue
+collector_control_syn_queue_name: collector_control_syn_queue
+emitter_start_queue_name: emitter_start_queue
+worker_start_queue_name: worker_start_queue
+collector_start_queue_name: collector_start_queue

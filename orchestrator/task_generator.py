@@ -6,7 +6,7 @@ import redis
 import random
 import numpy as np
 from threading import Thread
-from utilities import get_config, init_redis_client, generate_matrix, invoke_function_async
+from utilities import get_config, init_redis_client, generate_matrix
 
 def generate_task_payload(matrix_size):
     """
@@ -74,7 +74,7 @@ def push_task_to_queue(redis_client, queue_name, task_json, task_index):
 
     return False
 
-def generate_and_push_tasks(num_tasks, redis_client, input_queue, payload):
+def generate_and_push_tasks(num_tasks, redis_client, input_queue):
     """
     Generate and push matrix multiplication tasks to Redis queue.
 
@@ -93,10 +93,6 @@ def generate_and_push_tasks(num_tasks, redis_client, input_queue, payload):
 
         success = push_task_to_queue(redis_client, input_queue, task_json, i)
 
-        # invoke_function_async("emitter", payload)
-        # invoke_function_async("worker", payload)
-        # invoke_function_async("collector", payload)
-
         if success:
             print(f"[INFO] Task {i}/{num_tasks}: size={json_size} bytes, matrix={matrix_size}x{matrix_size}")
             if i % 100 == 0 or i == num_tasks:
@@ -106,7 +102,7 @@ def generate_and_push_tasks(num_tasks, redis_client, input_queue, payload):
 
     print(f"[INFO] Task generation complete: {num_tasks} tasks pushed to '{input_queue}'.")
 
-def task_producer(requests_in_window, redis_client, input_queue, payload, window_duration=30):
+def task_producer(requests_in_window, redis_client, input_queue, window_duration=30):
     """
     Produces tasks over a time window with Poisson-distributed inter-arrival times.
 
@@ -114,7 +110,6 @@ def task_producer(requests_in_window, redis_client, input_queue, payload, window
         requests_in_window (int): Number of tasks in this time window.
         redis_client (redis.Redis): Redis client instance.
         input_queue (str): Redis input queue name.
-        payload (dict): Payload for invoking functions.
         window_duration (int): Duration of the window in seconds.
     """
     if requests_in_window <= 0:
@@ -128,7 +123,7 @@ def task_producer(requests_in_window, redis_client, input_queue, payload, window
     total_elapsed = 0
     for i, delay in enumerate(inter_arrival_times):
         before = time.time()
-        Thread(target=generate_and_push_tasks, args=(1, redis_client, input_queue, payload)).start()
+        Thread(target=generate_and_push_tasks, args=(1, redis_client, input_queue)).start()
         print(f"[DEBUG] Scheduled task {i + 1}/{requests_in_window}, sleeping {delay}s...")
         after = time.time()
         adjusted_delay = max(0, delay - (after - before))  # Ensure non-negative sleep time
@@ -142,7 +137,9 @@ def task_producer(requests_in_window, redis_client, input_queue, payload, window
     #     time.sleep(remaining_time)
 
 def main():
-    task_genration_start_time = time.time()
+    task_generation_start_time = time.time()
+    print(f"[INFO] Starting task generation at {time.ctime(task_generation_start_time)}...")
+
     if len(sys.argv) != 4:
         print("Usage: python task_generator.py <number_of_tasks_to_generate> <num_cycles> <feedback_enabled>")
         print("Example: python task_generator.py 100 10 False")
@@ -160,14 +157,19 @@ def main():
         print(f"[ERROR] Invalid task number: {ve}", file=sys.stderr)
         sys.exit(1)
     print(f"[INFO] Generating {num_tasks} tasks across {num_cycles} cycles with feedback={feedback_flag}")
-    config = get_config()
+    configuration = get_config()
     payload = {
-        "input_queue_name": config["input_queue_name"],
-        "worker_queue_name": config["worker_queue_name"],
-        "result_queue_name": config["result_queue_name"],
-        "output_queue_name": config["output_queue_name"],
-        "control_syn_queue_name": config["control_syn_queue_name"],
-        "control_ack_queue_name": config["control_ack_queue_name"],
+        "input_queue_name": configuration.get("input_queue_name"),
+        "worker_queue_name": configuration.get("worker_queue_name"),
+        "result_queue_name": configuration.get("result_queue_name"),
+        "output_queue_name": configuration.get("output_queue_name"),
+        "emitter_control_syn_queue_name": configuration.get("emitter_control_syn_queue_name"),
+        "worker_control_syn_queue_name": configuration.get("worker_control_syn_queue_name"),
+        "worker_control_ack_queue_name": configuration.get("worker_control_ack_queue_name"),
+        "collector_control_syn_queue_name": configuration.get("collector_control_syn_queue_name"),
+        "emitter_start_queue_name": configuration.get("emitter_start_queue_name"),
+        "worker_start_queue_name": configuration.get("worker_start_queue_name"),
+        "collector_start_queue_name": configuration.get("collector_start_queue_name"),
         "collector_feedback_flag": feedback_flag,
     }
 
@@ -188,10 +190,10 @@ def main():
     print(f"[INFO] Starting task generation across {num_tasks} tasks over {num_cycles} cycles of 30 seconds each.")
     for cycle in range(num_cycles):
         print(f"\n[CYCLE {cycle+1}] Generating {num_tasks} tasks over 30s...")
-        task_producer(num_tasks, redis_client, config['input_queue_name'], payload, window_duration=30)
+        task_producer(num_tasks, redis_client, configuration.get('input_queue_name'), window_duration=30)
 
     task_generation_end_time = time.time()
-    print(f"[INFO] Task generation completed across all cycles in {task_generation_end_time - task_genration_start_time:.2f} seconds.")
+    print(f"[INFO] Task generation completed across all cycles in {task_generation_end_time - task_generation_start_time:.2f} seconds.")
 
 if __name__ == "__main__":
     main()
