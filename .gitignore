@@ -1,5 +1,10 @@
 .DS_Store
 openfaas-functions/build/
-openfaas-functions/template/
 orchestrator/__pycache__/
 orchestrator/logs_farm/
+# Ignore everything in the template directory
+openfaas-functions/template/*
+
+# Except the python3-http-skeleton directory
+!openfaas-functions/template/python3-http-skeleton/
+!openfaas-functions/template/python3-http-skeleton/**  # include its contents too

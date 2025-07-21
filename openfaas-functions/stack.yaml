@@ -5,7 +5,7 @@ provider:
   # gateway: $OPENFAAS_GATEWAY
 functions:
   emitter:
-    lang: python3-http
+    lang: python3-http-skeleton
     handler: ./emitter
     image: lilanpei/emitter:latest
     # image: $USERID/$IMAGE_NAME:$TAG
@@ -20,7 +20,7 @@ functions:
       com.openfaas.retry.attempts: "0"
 
   worker:
-    lang: python3-http
+    lang: python3-http-skeleton
     handler: ./worker
     image: lilanpei/worker:latest
     # image: $USERID/$IMAGE_NAME:$TAG
@@ -35,7 +35,7 @@ functions:
       com.openfaas.retry.attempts: "0"
 
   collector:
-    lang: python3-http
+    lang: python3-http-skeleton
     handler: ./collector
     image: lilanpei/collector:latest
     # image: $USERID/$IMAGE_NAME:$TAG
@@ -51,5 +51,5 @@ functions:
 
 configuration:
   templates:
-    - name: python3-http
-      source: https://github.com/openfaas/python3-http-template
+    - name: python3-http-skeleton
+      source: https://github.com/lilanpei/AI-based-Autonomic-Management-of-Structured-Parallel-Programs/openfaas-functions/template/python3-http-skeleton
