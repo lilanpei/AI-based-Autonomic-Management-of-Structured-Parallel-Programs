@@ -9,6 +9,7 @@ import requests
 import subprocess
 import numpy as np
 from threading import Thread
+from datetime import datetime, timezone
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
@@ -35,6 +36,12 @@ def get_config():
         sys.exit(1)
 
     return _config
+
+def get_utc_now():
+    """
+    Returns the current UTC time as a timezone-aware datetime object.
+    """
+    return datetime.now(timezone.utc)
 
 def init_redis_client():
     """
@@ -117,7 +124,7 @@ def scale_function_deployment(replica_count, apps_v1_api=None, deployment_name="
         print(f"[INFO] Scaled '{deployment_name}' to {replica_count} replicas.")
     except ApiException as e:
         print(f"[ERROR] Initial scaling failed: {e}", file=sys.stderr)
-        # time.sleep(5)
+        time.sleep(5)  # Wait before retrying
         try:
             apps_v1_api.patch_namespaced_deployment_scale(name=deployment_name, namespace=namespace, body=body)
             print(f"[INFO] Retry succeeded: scaled deployment.")
@@ -136,7 +143,7 @@ def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:
         print(f"[ERROR] Async invocation failed: {e}", file=sys.stderr)
 
 
-def safe_invoke_function_async(function_name, payload, redis_client, queue_name, replicas=1, gateway_url="http://127.0.0.1:8080", timeout=20, retries=2, backoff_factor=2):
+def safe_invoke_function_async(function_name, payload, redis_client, queue_name, replicas=1, gateway_url="http://127.0.0.1:8080", timeout=10, retries=1):
     attempt = 0
     try:
         qlen_pre = redis_client.llen(queue_name)
@@ -172,9 +179,8 @@ def safe_invoke_function_async(function_name, payload, redis_client, queue_name,
             time.sleep(1)  # Wait for Redis port-forward to stabilize
             redis_client = get_redis_client_with_retry()  # Reinitialize Redis client
         attempt += 1
-        sleep = backoff_factor ** attempt
-        print(f"[INFO] Backoff {timeout+sleep}s before retry {attempt}/{retries}")
-        time.sleep(timeout+sleep)
+        print(f"[INFO] Retrying invocation ({attempt}/{retries})...")
+        time.sleep(timeout)
 
     print(f"[FAILURE] Failed to invoke '{function_name}' after {retries+1} attempts.", file=sys.stderr)
 
@@ -214,7 +220,7 @@ def send_control_messages(message, redis_client, control_syn_q, count):
             print(f"[INFO] Sent control message to '{control_syn_q}'")
         except redis.exceptions.ConnectionError as e:
             print(f"[ERROR] Redis connection error: {e}. Retrying...", file=sys.stderr)
-            # time.sleep(5)
+            time.sleep(1)
             try:
                 redis_client = get_redis_client_with_retry()
                 redis_client.lpush(control_syn_q, json.dumps(message))
@@ -260,7 +266,7 @@ def get_function_pod_names(function_name, core_v1_api=None, namespace="openfaas-
     pods = core_v1_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
     return [pod.metadata.name for pod in pods.items]
 
-def init_pipeline(redis_client, configuration, payload, apps_v1_api=None):
+def init_pipeline(redis_client, configuration, payload, function_invoke_timeout, function_invoke_retries, apps_v1_api=None):
     """
     Initialize the pipeline by clearing queues and scaling deployments.
     """
@@ -286,11 +292,11 @@ def init_pipeline(redis_client, configuration, payload, apps_v1_api=None):
     print(f"[INFO] Queue Worker Replicas for pipeline: {queue_worker_replicas}")
     time.sleep(1)  # Wait for queue worker to stabilize
 
-    safe_invoke_function_async("emitter", payload, redis_client, configuration.get("emitter_start_queue_name"), replicas=1)
-    safe_invoke_function_async("worker", payload, redis_client, configuration.get("worker_start_queue_name"), replicas=1)
-    safe_invoke_function_async("collector", payload, redis_client, configuration.get("collector_start_queue_name"), replicas=1)
+    safe_invoke_function_async("emitter", payload, redis_client, configuration.get("emitter_start_queue_name"), replicas=1, timeout=function_invoke_timeout, retries=function_invoke_retries)
+    safe_invoke_function_async("worker", payload, redis_client, configuration.get("worker_start_queue_name"), replicas=1, timeout=function_invoke_timeout, retries=function_invoke_retries)
+    safe_invoke_function_async("collector", payload, redis_client, configuration.get("collector_start_queue_name"), replicas=1,timeout=function_invoke_timeout, retries=function_invoke_retries)
 
-def init_farm(redis_client, configuration, replicas, payload, apps_v1_api=None):
+def init_farm(redis_client, configuration, replicas, payload, function_invoke_timeout, function_invoke_retries, apps_v1_api=None):
     """
     Initialize the farm by clearing queues and scaling deployments.
     """
@@ -320,9 +326,9 @@ def init_farm(redis_client, configuration, replicas, payload, apps_v1_api=None):
     queue_worker_replicas = get_queue_worker_replicas(apps_v1_api=apps_v1_api)
     print(f"[INFO] Queue Worker Replicas for farm: {queue_worker_replicas}")
 
-    safe_invoke_function_async("emitter", payload, redis_client, configuration.get("emitter_start_queue_name"), replicas=1)
-    safe_invoke_function_async("worker", payload, redis_client, configuration.get("worker_start_queue_name"), replicas=replicas)
-    safe_invoke_function_async("collector", payload, redis_client, configuration.get("collector_start_queue_name"), replicas=1)
+    safe_invoke_function_async("emitter", payload, redis_client, configuration.get("emitter_start_queue_name"), replicas=1, timeout=function_invoke_timeout, retries=function_invoke_retries)
+    safe_invoke_function_async("worker", payload, redis_client, configuration.get("worker_start_queue_name"), replicas=replicas, timeout=function_invoke_timeout, retries=function_invoke_retries)
+    safe_invoke_function_async("collector", payload, redis_client, configuration.get("collector_start_queue_name"), replicas=1, timeout=function_invoke_timeout, retries=function_invoke_retries)
 
 def scale_deployments_to_zero_replica(apps_v1_api=None):
     """
@@ -348,7 +354,7 @@ def clear_all_queues(redis_client):
     clear_queues(redis_client, None)
     print("[INFO] Cleared all Redis queues.")
 
-def restart_resources(core_v1_api, namespace = "openfaas"):
+def restart_resources(core_v1_api, program_start_time, namespace = "openfaas"):
     """ Restarts all resources in the specified namespace.
     Deletes all pods, deployments, services, and configmaps.
     """
@@ -362,7 +368,7 @@ def restart_resources(core_v1_api, namespace = "openfaas"):
         ("faas_function", "worker"),
         ("faas_function", "collector"),
     ]
-    print(f"[INFO] Restarting Redis master pod at {time.ctime(time.time())}...")
+    print(f"[TIMER] Restarting Redis master pod at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
     delete_pod_by_name("redis-master-0", "redis", core_v1_api=core_v1_api)
     print(f"[INFO] Restarting pods in namespace '{namespace}'...")
     for key, val in labels:
@@ -413,7 +419,7 @@ def port_forward(namespace, svc_name, local_port, remote_port, retries=2, delay=
 
     print(f"[FAILURE] Could not establish port-forward for {svc_name} after {retries} attempts.", file=sys.stderr)
 
-def initialize_environment():
+def initialize_environment(program_start_time):
     """
     Orchestrates environment initialization.
     """
@@ -428,20 +434,20 @@ def initialize_environment():
     core_v1_api = client.CoreV1Api()
     apps_v1_api = client.AppsV1Api()
 
-    print(f"[INFO] Starting environment initialization at {time.ctime(time.time())}...")
+    print(f"[TIMER] Starting environment initialization at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
     scale_deployments_to_zero_replica(apps_v1_api=apps_v1_api)
     time.sleep(10)
-    # print(f"[INFO] Restarting resources at {time.ctime(time.time())}...")
-    # restart_resources(core_v1_api=core_v1_api)
+    # print(f"[TIMER] Restarting resources at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
+    # restart_resources(program_start_time, core_v1_api=core_v1_api)
     # time.sleep(180)
-    print(f"[INFO] Port-forwarding services at {time.ctime(time.time())}...")
+    print(f"[TIMER] Port-forwarding services at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
     port_forward("openfaas", "gateway", 8080, 8080)
     port_forward("redis", "redis-master", 6379, 6379)
     time.sleep(2)
-    print(f"[INFO] Initializing Redis client at {time.ctime(time.time())}...")
+    print(f"[TIMER] Initializing Redis client at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
     redis_client = get_redis_client_with_retry()
     clear_all_queues(redis_client)
-    print(f"[INFO] Environment initialization completed at {time.ctime(time.time())}.")
+    print(f"[TIMER] Environment initialization completed at {(get_utc_now() - program_start_time).total_seconds():.4f}.")
     return get_config(), redis_client
 
 def run_script(script_name, args=[]):

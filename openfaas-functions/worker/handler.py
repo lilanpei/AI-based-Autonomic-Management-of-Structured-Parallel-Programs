@@ -2,25 +2,20 @@ import os
 import sys
 import json
 import time
-import redis
 import numpy as np
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from utils import (
-    backoff_factor,
-    retries,
     get_redis_client,
     parse_request_body,
     safe_redis_call,
     fetch_control_message,
     send_start_signal,
+    get_utc_now,
     prepare_matrices
 )
 
 def handle(event, context):
-    now = datetime.now(ZoneInfo("Europe/Rome"))
     pod_name = os.environ.get("HOSTNAME")
-    print(f"\n[Worker] Invoked at {now.strftime('%Y-%m-%d %H:%M:%S %Z')} on pod {pod_name}")
     tasks_processed = 0
     redis_client = get_redis_client()
     body = parse_request_body(event)
@@ -29,23 +24,32 @@ def handle(event, context):
 
     worker_q, result_q = body.get('worker_queue_name'), body.get('result_queue_name')
     control_syn_q, control_ack_q = body.get('worker_control_syn_queue_name'), body.get('worker_control_ack_queue_name')
-    start_q = body.get('worker_start_queue_name')
-    print(f"[DEBUG] Worker received body: {body}")
+    start_q, processing_delay = body.get('worker_start_queue_name'), body.get('processing_delay')
+    wait_time, program_start_time_str = body.get("wait_time"), body.get("program_start_time")
 
-    if not all([worker_q, result_q, control_syn_q, control_ack_q, start_q]):
+    if program_start_time_str:
+        program_start_time = datetime.fromisoformat(program_start_time_str)
+    else:
+        print("[ERROR] START_TIMESTAMP environment variable not set.", file=sys.stderr)
+        sys.exit(1)
+
+    if not all([worker_q, result_q, control_syn_q, control_ack_q, start_q, processing_delay, wait_time, program_start_time]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
+    print(f"\n[Worker] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
+    print(f"[DEBUG] Worker received body: {body}")
+
     # send start signal to start queue
-    send_start_signal(redis_client, start_q, pod_name, now)
+    send_start_signal(redis_client, start_q, pod_name, (get_utc_now() - program_start_time).total_seconds())
 
     previous_iteration_start = None
     attempts = 0
 
     while True:
-        print("------------------------------")
-        iteration_start = time.time()
+        iteration_start = (get_utc_now() - program_start_time).total_seconds()
+        print(f"-------------Iteration start at {iteration_start:.4f}-----------------")
         if previous_iteration_start:
-            print(f"[INFO] Iteration time: {iteration_start - previous_iteration_start:.2f} sec")
+            print(f"[INFO] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
         previous_iteration_start = iteration_start
 
         try:
@@ -57,7 +61,7 @@ def handle(event, context):
                     ack_msg = {
                         "type": "SCALE_DOWN",
                         "action": "ACK",
-                        "ack_timestamp": time.time(),
+                        "ack_timestamp": (get_utc_now() - program_start_time).total_seconds(),
                         "task_id": control_msg.get("task_id"),
                         "pod_name": pod_name,
                         "message": "Worker pod is exiting as instructed."
@@ -81,21 +85,10 @@ def handle(event, context):
             raw_task = safe_redis_call(lambda: redis_client.rpop(worker_q))
 
             if not raw_task:
-                attempts += 1
-                sleep_time = backoff_factor ** attempts
-                print(f"[INFO] No task found in '{worker_q}' for {attempts} tries, waiting {sleep_time} seconds...")
-                time.sleep(sleep_time)
-                if attempts >= retries:
-                    print("[WARNING] No tasks found for a long time, exiting worker.")
-                    return {
-                        "statusCode": 200,
-                        "body": f"Worker pod {pod_name} exited due to inactivity."
-                    }
+                time.sleep(float(wait_time))
                 continue
             else:
-                attempts = 0
-                now = datetime.now(ZoneInfo("Europe/Rome"))
-                print(f"\n[Worker] got task at {now.strftime('%Y-%m-%d %H:%M:%S %Z')} on pod {pod_name}")
+                print(f"\n[Worker] got task at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
                 task = json.loads(raw_task)
                 tasks_processed += 1
                 if task.get("task_application") != "matrix_multiplication":
@@ -105,8 +98,8 @@ def handle(event, context):
                 print(f"[DEBUG] Processing task ID: {task_id}")
                 matrix_a, matrix_b = prepare_matrices(task)
                 result_matrix = np.dot(matrix_a, matrix_b)
-                time.sleep(2)  # Simulate processing delay
-                now = time.time()
+                time.sleep(float(processing_delay))  # Simulate processing delay
+                now = (get_utc_now() - program_start_time).total_seconds()
                 emit_ts = task.get("task_emit_timestamp")
                 result = {
                     "task_id": task_id,
@@ -121,14 +114,12 @@ def handle(event, context):
                     "task_work_timestamp": now
                 }
                 safe_redis_call(lambda: redis_client.lpush(result_q, json.dumps(result)))
-                print(f"[INFO] Processed {tasks_processed} tasks from {worker_q} and pushed result to '{result_q}'")
+                print(f"[INFO] Processed {tasks_processed} tasks at {now} from {worker_q} and pushed result to '{result_q}' on pod {pod_name}")
 
         except Exception as e:
             print(f"[ERROR] Failed to process task: {e}", file=sys.stderr)
-            return {
-                "statusCode": 500,
-                "body": f"Failed to process task: {e}"
-            }
+            break
+
     print(f"[INFO] Worker processed {tasks_processed} tasks.")
 
     return {

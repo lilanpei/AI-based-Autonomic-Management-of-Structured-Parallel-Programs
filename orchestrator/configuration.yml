@@ -11,3 +11,12 @@ collector_control_syn_queue_name: collector_control_syn_queue
 emitter_start_queue_name: emitter_start_queue
 worker_start_queue_name: worker_start_queue
 collector_start_queue_name: collector_start_queue
+wait_time: 0.1
+processing_delay: 2
+deadline_coeff: 2.5e-7
+deadline_cap: 30
+deadline_floor: 1
+function_invoke_timeout: 10
+function_invoke_retries: 6
+scale_down_timeout: 10
+scale_down_retries: 3
