@@ -7,15 +7,12 @@ from kubernetes import client, config
 from utilities import (
     get_config,
     scale_function_deployment,
-    get_current_worker_replicas,
-    init_redis_client,
+    get_current_replicas,
     send_control_messages,
     delete_pod_by_name,
     safe_invoke_function_async,
     get_function_pod_names,
     get_redis_client_with_retry,
-    scale_queue_worker,
-    get_queue_worker_replicas,
     get_utc_now
 )
 
@@ -60,7 +57,7 @@ def scale_up(current, delta, configuration, redis_client, payload, function_invo
     print(f"[INFO] Scaling up from {current} to {new_replicas} replicas...")
     scale_function_deployment(new_replicas, apps_v1_api)
     time.sleep(delta)
-    scale_queue_worker(new_replicas+2, apps_v1_api)
+    scale_function_deployment(new_replicas+2, apps_v1_api=apps_v1_api, deployment_name="queue-worker", namespace="openfaas")
     time.sleep(delta)
     safe_invoke_function_async("worker", payload, redis_client, configuration.get("worker_start_queue_name"), delta, timeout=function_invoke_timeout, retries=function_invoke_retries)
 
@@ -104,7 +101,7 @@ def scale_down(program_start_time, current, delta, configuration, redis_client, 
             time.sleep(timeout)
             if attempts >= retries:
                 print("[WARNING] No ACKs received for a long time, exiting scale down.")
-                print(f"[INFO] Current worker replicas: {get_current_worker_replicas(apps_v1_api)}")
+                print(f"[INFO] Current worker replicas: {get_current_replicas(apps_v1_api, namespace='openfaas-fn', deployment_name='worker')}")
                 sys.exit(0)
             continue
 
@@ -188,7 +185,7 @@ def main():
         "collector_feedback_flag": feedback_flag
     }
 
-    current_replicas = get_current_worker_replicas(apps_v1_api)
+    current_replicas = get_current_replicas(apps_v1_api, namespace="openfaas-fn", deployment_name="worker")
     print(f"[INFO] Current replicas: {current_replicas}")
 
     if delta > 0:
@@ -198,12 +195,12 @@ def main():
             print("[INFO] Only one replica present; cannot scale down further.")
         else:
             new_replicas = scale_down(program_start_time, current_replicas, delta, configuration, redis_client, int(scale_down_timeout), int(scale_down_retries), core_v1_api, apps_v1_api)
-            scale_queue_worker(new_replicas+2, apps_v1_api)
+            scale_function_deployment(new_replicas+2, apps_v1_api=apps_v1_api, deployment_name="queue-worker", namespace="openfaas")
 
     print(f"[TIMER] Finalizing scaling at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
     time.sleep(2)
-    current_worker_replicas = get_current_worker_replicas(apps_v1_api)
-    current_queue_worker_replicas = get_queue_worker_replicas(apps_v1_api)
+    current_worker_replicas = get_current_replicas(apps_v1_api, namespace="openfaas-fn", deployment_name="worker")
+    current_queue_worker_replicas = get_current_replicas(apps_v1_api, namespace="openfaas", deployment_name="queue-worker")
     print(f"[INFO] Current Worker Replicas: {current_worker_replicas}, Queue Worker Replicas: {current_queue_worker_replicas}")
 
 

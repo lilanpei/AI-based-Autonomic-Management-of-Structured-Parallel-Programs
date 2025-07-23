@@ -36,8 +36,8 @@ def handle(event, context):
     if not all([worker_q, result_q, control_syn_q, control_ack_q, start_q, processing_delay, wait_time, program_start_time]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
-    print(f"\n[Worker] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
-    print(f"[DEBUG] Worker received body: {body}")
+    print(f"\n[TIMER] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
+    print(f"[INFO] Worker received body: {body}")
 
     # send start signal to start queue
     send_start_signal(redis_client, start_q, pod_name, (get_utc_now() - program_start_time).total_seconds())
@@ -47,9 +47,9 @@ def handle(event, context):
 
     while True:
         iteration_start = (get_utc_now() - program_start_time).total_seconds()
-        print(f"-------------Iteration start at {iteration_start:.4f}-----------------")
+        print(f"[TIMER]-------------Iteration start at {iteration_start:.4f}-----------------")
         if previous_iteration_start:
-            print(f"[INFO] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
+            print(f"[TIMER] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
         previous_iteration_start = iteration_start
 
         try:
@@ -88,14 +88,14 @@ def handle(event, context):
                 time.sleep(float(wait_time))
                 continue
             else:
-                print(f"\n[Worker] got task at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
+                print(f"\n[TIMER] got task at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
                 task = json.loads(raw_task)
                 tasks_processed += 1
                 if task.get("task_application") != "matrix_multiplication":
                     raise ValueError("Unsupported task application")
 
                 task_id = task.get("task_id")
-                print(f"[DEBUG] Processing task ID: {task_id}")
+                print(f"[INFO] Processing task ID: {task_id}")
                 matrix_a, matrix_b = prepare_matrices(task)
                 result_matrix = np.dot(matrix_a, matrix_b)
                 time.sleep(float(processing_delay))  # Simulate processing delay
@@ -114,7 +114,7 @@ def handle(event, context):
                     "task_work_timestamp": now
                 }
                 safe_redis_call(lambda: redis_client.lpush(result_q, json.dumps(result)))
-                print(f"[INFO] Processed {tasks_processed} tasks at {now} from {worker_q} and pushed result to '{result_q}' on pod {pod_name}")
+                print(f"[TIMER] Processed {tasks_processed} tasks at {now} from {worker_q} and pushed result to '{result_q}' on pod {pod_name}")
 
         except Exception as e:
             print(f"[ERROR] Failed to process task: {e}", file=sys.stderr)

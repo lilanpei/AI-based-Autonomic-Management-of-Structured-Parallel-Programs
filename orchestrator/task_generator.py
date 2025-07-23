@@ -122,7 +122,7 @@ def task_producer(requests_in_window, redis_client, input_queue, program_start_t
     for i, delay in enumerate(inter_arrival_times):
         before = (get_utc_now() - program_start_time).total_seconds()
         Thread(target=generate_and_push_tasks, args=(1, redis_client, input_queue, program_start_time, deadline_coeff, deadline_cap, deadline_floor)).start()
-        print(f"[DEBUG] Scheduled task {i + 1}/{requests_in_window}, sleeping {delay}s...")
+        print(f"[INFO] Scheduled task {i + 1}/{requests_in_window}, sleeping {delay}s...")
         after = (get_utc_now() - program_start_time).total_seconds()
         adjusted_delay = max(0, delay - (after - before))  # Ensure non-negative sleep time
         if adjusted_delay > 0:
@@ -136,7 +136,7 @@ def main():
         print("[ERROR] START_TIMESTAMP environment variable not set.", file=sys.stderr)
         sys.exit(1)
     task_generation_start_time = (get_utc_now() - program_start_time).total_seconds()
-    print(f"[TIMER] Starting task generation at {task_generation_start_time:.4f}")
+    print(f"[TIMER] Task generation started at [{task_generation_start_time:.4f}] seconds.")
     if len(sys.argv) != 4:
         print("Usage: python task_generator.py <number_of_tasks_to_generate> <num_cycles> <feedback_enabled>")
         print("Example: python task_generator.py 100 10 False")
@@ -179,7 +179,7 @@ def main():
         task_producer(num_tasks, redis_client, configuration.get('input_queue_name'), program_start_time, deadline_coeff, deadline_cap, deadline_floor)
 
     task_generation_end_time = (get_utc_now() - program_start_time).total_seconds()
-    print(f"[TIMER] Task generation completed at {task_generation_end_time:.4f} across all cycles in {(task_generation_end_time - task_generation_start_time):.4f} seconds.")
+    print(f"[TIMER] Task generation completed at [{task_generation_end_time:.4f}] seconds, across all cycles in [{(task_generation_end_time - task_generation_start_time):.4f}] seconds.")
 
 if __name__ == "__main__":
     main()

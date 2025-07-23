@@ -3,7 +3,7 @@ import os
 import argparse
 import sys
 import time
-from utilities import get_utc_now
+from utilities import get_utc_now, get_config
 
 def parse_worker_count():
     parser = argparse.ArgumentParser()
@@ -23,14 +23,17 @@ def run_worker_scaler_twice(log_file):
             else:
                 print(f"❌ Failed worker_scaler.py run {run} (exit {process.returncode})")
 
-def get_xargs_log_cmd(function_name):
+def get_xargs_log_cmd(function_name, grep_pattern):
     return [
         "bash", "-c",
         f"kubectl get pods -l faas_function={function_name} -n openfaas-fn -o name | "
-        f"xargs -P 34 -I{{}} kubectl logs {{}} -n openfaas-fn"
+        f"xargs -P 34 -I{{}} kubectl logs {{}} -n openfaas-fn  | grep '{grep_pattern}'"
     ]
 
 def run_commands_with_logs():
+    configuration = get_config()
+    log_tags = configuration.get("log_tags", ['.*'])  # Default to match all logs if not specified
+    grep_pattern = "\\|".join([f"\\{tag}" for tag in log_tags])  # e.g., \[INFO\]\|\[TIMER\]
     worker_count = parse_worker_count()
     worker_suffix = f"w{worker_count}"
     today = get_utc_now().strftime("%m%d")
@@ -39,10 +42,12 @@ def run_commands_with_logs():
     timestamp = get_utc_now().strftime("%H%M")
 
     controller_cmd = {
-        "cmd": sys.argv[1:],
+        "cmd": [
+            "bash", "-c",
+            f"{' '.join(sys.argv[1:])} | grep '{grep_pattern}'"
+        ],
         "log_file": f"{log_dir}/logs_controller_{worker_suffix}_{timestamp}.txt"
     }
-
     other_cmds = [
         {
             "cmd": ["kubectl", "logs", "-n", "openfaas", "deploy/nats"],
@@ -53,15 +58,15 @@ def run_commands_with_logs():
             "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
         },
         {
-            "cmd": get_xargs_log_cmd("collector"),
+            "cmd": get_xargs_log_cmd("collector", grep_pattern),
             "log_file": f"{log_dir}/logs_collector_{worker_suffix}_{timestamp}.txt"
         },
         {
-            "cmd": get_xargs_log_cmd("emitter"),
+            "cmd": get_xargs_log_cmd("emitter", grep_pattern),
             "log_file": f"{log_dir}/logs_emitter_{worker_suffix}_{timestamp}.txt"
         },
         {
-            "cmd": get_xargs_log_cmd("worker"),
+            "cmd": get_xargs_log_cmd("worker", grep_pattern),
             "log_file": f"{log_dir}/logs_worker_{worker_suffix}_{timestamp}.txt"
         },
         {
@@ -84,13 +89,13 @@ def run_commands_with_logs():
         print(f"Log directory: {log_dir}")
         print(f"Worker suffix: {worker_suffix}")
 
-        # Step 1: Run controller command for 130s
+        # Step 1: Run controller command for 240s
         with open(controller_cmd["log_file"], "w") as log_file:
             controller_proc = subprocess.Popen(controller_cmd["cmd"], stdout=log_file, stderr=subprocess.STDOUT, text=True)
             processes.append((controller_proc, controller_cmd["cmd"], controller_cmd["log_file"]))
             print(f"Started controller: {' '.join(controller_cmd['cmd'])} → {controller_cmd['log_file']}")
-            time.sleep(130)
-            print("[Workflow] 130 seconds passed — moving to other commands")
+            time.sleep(240)  # Wait for 240 seconds
+            print("[Workflow] 240 seconds passed — moving to other commands")
 
         # Step 2: Run all other logging commands
         for cmd_info in other_cmds:

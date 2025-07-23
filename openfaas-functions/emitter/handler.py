@@ -34,8 +34,8 @@ def handle(event, context):
     if not all([input_q, worker_q, start_q, wait_time, program_start_time]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
-    print(f"[DEBUG] Emitter received body: {body}")
-    print(f"\n[Emitter] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
+    print(f"[INFO] Emitter received body: {body}")
+    print(f"\n[TIMER] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
 
     # send start signal to start queue
     send_start_signal(redis_client, start_q, pod_name, (get_utc_now() - program_start_time).total_seconds())
@@ -45,9 +45,9 @@ def handle(event, context):
 
     while True:
         iteration_start = (get_utc_now() - program_start_time).total_seconds()
-        print(f"-------------Iteration start at {iteration_start:.4f}-----------------")
+        print(f"[TIMER]-------------Iteration start at {iteration_start:.4f}-----------------")
         if previous_iteration_start:
-            print(f"[INFO] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
+            print(f"[TIMER] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
         previous_iteration_start = iteration_start
 
         try:
@@ -66,12 +66,12 @@ def handle(event, context):
                 time.sleep(float(wait_time))
                 continue
             else:
-                print(f"\n[Emitter] got task at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
+                print(f"\n[TIMER] got task at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
                 task = extract_task(raw_task, program_start_time)
                 tasks_generated += 1
 
                 safe_redis_call(lambda: redis_client.lpush(worker_q, json.dumps(task)))
-                print(f"[INFO] Pushed {tasks_generated} tasks at {(get_utc_now() - program_start_time).total_seconds():.4f} from '{input_q}' to '{worker_q}' on pod {pod_name}")
+                print(f"[TIMER] Pushed {tasks_generated} tasks at {(get_utc_now() - program_start_time).total_seconds():.4f} from '{input_q}' to '{worker_q}' on pod {pod_name}")
 
         except Exception as e:
             print(f"ERROR: Unexpected error: {e}", file=sys.stderr)

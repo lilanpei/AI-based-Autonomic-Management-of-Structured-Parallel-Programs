@@ -16,7 +16,11 @@ processing_delay: 2
 deadline_coeff: 2.5e-7
 deadline_cap: 30
 deadline_floor: 1
-function_invoke_timeout: 10
+function_invoke_timeout: 3
 function_invoke_retries: 6
 scale_down_timeout: 10
 scale_down_retries: 3
+log_tags:
+  # - "[INFO]"
+  - "[TIMER]"
+  - "[ERROR]"

@@ -38,7 +38,7 @@ def handle(event, context):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
     print(f"\n[TIMER] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
-    print(f"[DEBUG] Collector received body: {body}")
+    print(f"[INFO] Collector received body: {body}")
 
     # send start signal to start queue
     send_start_signal(redis_client, start_q, pod_name, (get_utc_now() - program_start_time).total_seconds())
@@ -49,7 +49,7 @@ def handle(event, context):
         iteration_start = (get_utc_now() - program_start_time).total_seconds()
         print(f"[TIMER]-------------Iteration start at {iteration_start:.4f}-----------------")
         if previous_iteration_start:
-            print(f"[INFO] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
+            print(f"[TIMER] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
         previous_iteration_start = iteration_start
 
         try:

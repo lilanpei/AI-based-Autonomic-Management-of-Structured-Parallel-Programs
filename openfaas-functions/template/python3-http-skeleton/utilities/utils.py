@@ -24,7 +24,7 @@ def get_redis_client():
         try:
             _redisClient = init_redis_client()
         except redis.exceptions.ConnectionError as e:
-            print(f"[CRITICAL] Redis connection failed: {e}", file=sys.stderr)
+            print(f"[ERROR] Redis connection failed: {e}", file=sys.stderr)
             return {"statusCode": 500, "body": f"Redis connection failed: {e}"}
     return _redisClient
 
@@ -115,7 +115,7 @@ def extract_result(raw_result, program_start_time):
         work_ts = result.get("task_work_timestamp")
         gen_ts = result.get("task_gen_timestamp")
         task_id = result.get("task_id")
-        print(f"[DEBUG] Extracted result for task {task_id}")
+        print(f"[INFO] Extracted result for task {task_id}")
         now = (get_utc_now() - program_start_time).total_seconds()
         deadline_met = (now - gen_ts) <= deadline
 
@@ -161,7 +161,7 @@ def extract_task(raw_task, program_start_time):
             raise ValueError("Task missing required keys")
 
         task_id = task.get('task_id')
-        print(f"[DEBUG] Extracted task ID: {task_id}")
+        print(f"[INFO] Extracted task ID: {task_id}")
         now = (get_utc_now() - program_start_time).total_seconds()
 
         return {

@@ -7,11 +7,9 @@ from threading import Thread
 from kubernetes import client, config
 from utilities import (
     get_config,
-    init_redis_client,
     init_pipeline,
     init_farm,
     get_redis_client_with_retry,
-    get_current_worker_replicas,
     initialize_environment,
     run_script,
     monitor_worker_replicas,
@@ -119,11 +117,11 @@ def monitor_queues(program_start_time, interval=3, total_tasks=1000, feedback_en
 
     end_time = None
     monitoring_start_time = (get_utc_now() - program_start_time).total_seconds()
-    print(f"[TIMER] Monitoring started at {monitoring_start_time:.4f} seconds")
+    print(f"[TIMER] Monitoring started at [{monitoring_start_time:.4f}] seconds.")
 
     while True:
         now = (get_utc_now() - program_start_time).total_seconds()
-        print(f"[TIMER]------------- Monitoring window at {now:.4f} seconds -------------")
+        print(f"[INFO]------------- Monitoring window at [{now:.4f}] seconds -------------")
         print("\n[QUEUE STATUS]")
         for queue in QUEUE_NAMES:
             length = redis_client.llen(queue)
@@ -137,17 +135,17 @@ def monitor_queues(program_start_time, interval=3, total_tasks=1000, feedback_en
         if total_results == total_tasks and program_start_time and end_time is None:
 
             end_time = (get_utc_now() - program_start_time).total_seconds()
-            print(f"\n[TIMER] Program end time recorded at {end_time:.4f} seconds")
+            print(f"\n[TIMER] Program/Monitoring completed at [{end_time:.4f}] seconds.")
             for index, raw in enumerate(results):
                 result = json.loads(raw)
                 print(f"[INFO] Result {index} (task_id: {result.get("task_id")}):")
-                print(f"  Emit Time    : {result.get("task_emit_time"):.4f} sec")
-                print(f"  Collect Time : {result.get("task_collect_time"):.4f} sec")
-                print(f"  Compute Time : {result.get("task_work_time"):.4f} sec")
-                print(f"[DEBUG] result: {result}")
+                print(f"[INFO]  Emit Time    : {result.get("task_emit_time"):.4f} sec")
+                print(f"[INFO]  Collect Time : {result.get("task_collect_time"):.4f} sec")
+                print(f"[INFO]  Compute Time : {result.get("task_work_time"):.4f} sec")
+                print(f"[INFO] result: {result}")
 
-            print(f"\n[TIMER] All {total_tasks} tasks completed at {end_time:.4f} seconds.")
-            print(f"[TIMER] Total processing time start from monitoring: {(end_time - monitoring_start_time):.4f} seconds")
+            print(f"\n[INFO] All {total_tasks} tasks completed at {end_time:.4f} seconds.")
+            print(f"[TIMER] Total monitoring time: [{(end_time - monitoring_start_time):.4f}] seconds.")
             # Send terminate control messages
             message = {
                 "type": "TERMINATE",
@@ -182,11 +180,10 @@ def main():
     # Record start time
     program_start_time = get_utc_now()
     os.environ["START_TIMESTAMP"] = str(program_start_time)  # Set env var
-    print(f"[TIMER] Program started at {(get_utc_now() - program_start_time).total_seconds():.4f} seconds")
+    print(f"[TIMER] Program started at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds")
 
     # Step 1: Initialize environment
-    configuration, redis_client = initialize_environment(program_start_time)
-    time.sleep(20) # Give time for env to settle
+    configuration = initialize_environment(program_start_time)
     payload = {
         "input_queue_name": configuration.get("input_queue_name"),
         "worker_queue_name": configuration.get("worker_queue_name"),
@@ -207,29 +204,22 @@ def main():
         "program_start_time": str(program_start_time),
         "collector_feedback_flag": feedback_flag
     }
+    time.sleep(10) # Give time for env to settle
 
-    # Step 2: Start workers and collector based on mode
+    # Step 2: Workflow Controller Initialization
     if args.mode == "pipeline":
-        init_pipeline(redis_client, configuration, payload, int(configuration.get("function_invoke_timeout")), int(configuration.get("function_invoke_retries")))
+        redis_client = init_pipeline(program_start_time, configuration, payload, int(configuration.get("function_invoke_timeout")), int(configuration.get("function_invoke_retries")))
     elif args.mode == "farm":
-        init_farm(redis_client, configuration, int(args.workers), payload, int(configuration.get("function_invoke_timeout")), int(configuration.get("function_invoke_retries")))
-    # time.sleep(10) # Give time for env to settle
+        redis_client = init_farm(program_start_time, configuration, int(args.workers), payload, int(configuration.get("function_invoke_timeout")), int(configuration.get("function_invoke_retries")))
+    time.sleep(10) # Give time for env to settle
 
-    # Step 3: Start task generator asynchronously
-    print(f"[TIMER] Environment initialization time: {(get_utc_now() - program_start_time).total_seconds():.4f} seconds")
-
-    # Step 4: Begin monitoring queues
+    # Step 3: Begin monitoring queues
     print(f"[INFO] Monitoring queues for {total_tasks} tasks across {int(args.cycles)} cycles.")
     async_function((monitor_queues), program_start_time, interval=3, total_tasks=total_tasks, feedback_enabled=feedback_flag, configuration=configuration, redis_client=redis_client)
 
-    # Step 5: Start task generator script
-    print(f"[TIMER] Starting task generator with {args.tasks} tasks and {args.cycles} cycles with feedback={feedback_flag} at {(get_utc_now() - program_start_time).total_seconds():.4f} seconds")
+    # Step 3: Start task generator script
+    print(f"[INFO] Starting task generator with {args.tasks} tasks and {args.cycles} cycles with feedback={feedback_flag} at {(get_utc_now() - program_start_time).total_seconds():.4f} seconds")
     run_script("task_generator.py", [str(args.tasks), str(args.cycles), str(feedback_flag)])
-
-    # print("[INFO] Queue monitoring completed.")
-    # print(f"[TIMER] Total program execution time: {(get_utc_now() - program_start_time).total_seconds():.4f} seconds")
-    # print("[INFO] Workflow Controller execution completed.")
-    # print("[INFO] Exiting program.")
 
 if __name__ == "__main__":
     main()
