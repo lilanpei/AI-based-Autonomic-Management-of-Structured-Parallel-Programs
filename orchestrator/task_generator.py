@@ -67,7 +67,7 @@ def push_task_to_queue(redis_client, queue_name, task_json, task_index):
             print(f"[INFO] Retry succeeded for task {task_index}.")
             return True
         except Exception as retry_e:
-            print(f"[CRITICAL] Retry failed for task {task_index}: {retry_e}", file=sys.stderr)
+            print(f"[ERROR] Retry failed for task {task_index}: {retry_e}", file=sys.stderr)
     except Exception as e:
         print(f"[ERROR] Failed to push task {task_index}: {e}", file=sys.stderr)
 
@@ -167,7 +167,7 @@ def main():
         try:
             redis_client = init_redis_client()
         except Exception as init_e:
-            print(f"[CRITICAL] Redis reinitialization failed: {init_e}", file=sys.stderr)
+            print(f"[ERROR] Redis reinitialization failed: {init_e}", file=sys.stderr)
             sys.exit(1)
 
     np.random.seed(29)  # for reproducibility

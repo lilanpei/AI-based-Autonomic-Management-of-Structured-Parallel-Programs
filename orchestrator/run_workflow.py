@@ -49,14 +49,14 @@ def run_commands_with_logs():
         "log_file": f"{log_dir}/logs_controller_{worker_suffix}_{timestamp}.txt"
     }
     other_cmds = [
-        {
-            "cmd": ["kubectl", "logs", "-n", "openfaas", "deploy/nats"],
-            "log_file": f"{log_dir}/logs_nats_{worker_suffix}_{timestamp}.txt"
-        },
-        {
-            "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=gateway", "-f"],
-            "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
-        },
+        # {
+        #     "cmd": ["kubectl", "logs", "-n", "openfaas", "deploy/nats"],
+        #     "log_file": f"{log_dir}/logs_nats_{worker_suffix}_{timestamp}.txt"
+        # },
+        # {
+        #     "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=gateway", "-f"],
+        #     "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
+        # },
         {
             "cmd": get_xargs_log_cmd("collector", grep_pattern),
             "log_file": f"{log_dir}/logs_collector_{worker_suffix}_{timestamp}.txt"
@@ -69,19 +69,18 @@ def run_commands_with_logs():
             "cmd": get_xargs_log_cmd("worker", grep_pattern),
             "log_file": f"{log_dir}/logs_worker_{worker_suffix}_{timestamp}.txt"
         },
-        {
-            "cmd": [
-                "kubectl", "logs",
-                "-l", "app=queue-worker",
-                "-n", "openfaas",
-                "--timestamps",
-                "--max-log-requests=34"
-            ],
-            "log_file": f"{log_dir}/logs_queue-worker_{worker_suffix}_{timestamp}.txt"
-        }
+        # {
+        #     "cmd": [
+        #         "kubectl", "logs",
+        #         "-l", "app=queue-worker",
+        #         "-n", "openfaas",
+        #         "--timestamps",
+        #         "--max-log-requests=34"
+        #     ],
+        #     "log_file": f"{log_dir}/logs_queue-worker_{worker_suffix}_{timestamp}.txt"
+        # }
     ]
 
-    processes = []
     run_worker_scale_down_enabled = False
     scaler_log = f"{log_dir}/logs_scaler_{worker_suffix}_{timestamp}.txt"
 
@@ -89,36 +88,27 @@ def run_commands_with_logs():
         print(f"Log directory: {log_dir}")
         print(f"Worker suffix: {worker_suffix}")
 
-        # Step 1: Run controller command for 240s
+        # Step 1: Run controller command
         with open(controller_cmd["log_file"], "w") as log_file:
             controller_proc = subprocess.Popen(controller_cmd["cmd"], stdout=log_file, stderr=subprocess.STDOUT, text=True)
-            processes.append((controller_proc, controller_cmd["cmd"], controller_cmd["log_file"]))
             print(f"Started controller: {' '.join(controller_cmd['cmd'])} → {controller_cmd['log_file']}")
-            time.sleep(240)  # Wait for 240 seconds
-            print("[Workflow] 240 seconds passed — moving to other commands")
-
-        # Step 2: Run all other logging commands
-        for cmd_info in other_cmds:
-            with open(cmd_info["log_file"], "w") as log_file:
-                proc = subprocess.Popen(cmd_info["cmd"], stdout=log_file, stderr=subprocess.STDOUT, text=True)
-                time.sleep(0.1)
-                processes.append((proc, cmd_info["cmd"], cmd_info["log_file"]))
-                print(f"Started: {' '.join(cmd_info['cmd'])} → {cmd_info['log_file']}")
 
         if run_worker_scale_down_enabled:
             run_worker_scaler_twice(scaler_log)
 
-        for process, cmd, log_file in processes:
-            process.wait()
-            if process.returncode == 0:
-                print(f"✅ Completed: {' '.join(cmd)}")
-            else:
-                print(f"❌ Failed (exit {process.returncode}): {' '.join(cmd)} → {log_file}")
+        controller_proc.wait()
+        if controller_proc.returncode == 0:
+            # Step 2: Run all other logging commands
+            for cmd_info in other_cmds:
+                with open(cmd_info["log_file"], "w") as log_file:
+                    proc = subprocess.Popen(cmd_info["cmd"], stdout=log_file, stderr=subprocess.STDOUT, text=True)
+                    print(f"Started: {' '.join(cmd_info['cmd'])} → {cmd_info['log_file']}")
+            print(f"✅ Completed: {' '.join(controller_cmd['cmd'])}")
+        else:
+            print(f"❌ Failed (exit {controller_proc.returncode}): {' '.join(controller_cmd['cmd'])} → {log_file}")
 
     except KeyboardInterrupt:
         print("\n🛑 KeyboardInterrupt: Terminating processes...")
-        for process, _, _ in processes:
-            process.terminate()
         controller_proc.terminate()
         sys.exit(1)
 

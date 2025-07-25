@@ -32,5 +32,6 @@ kubectl -n openfaas scale deployment gateway --replicas=1
 kubectl -n openfaas scale deployment nats --replicas=1
 kubectl -n openfaas scale deployment queue-worker --replicas=1
 
+sleep 30
 kubectl get pods -n openfaas -o wide
 echo "[SUCCESS] Cleanup complete."

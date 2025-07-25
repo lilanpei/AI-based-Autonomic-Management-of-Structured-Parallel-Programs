@@ -204,14 +204,12 @@ def main():
         "program_start_time": str(program_start_time),
         "collector_feedback_flag": feedback_flag
     }
-    time.sleep(10) # Give time for env to settle
 
     # Step 2: Workflow Controller Initialization
     if args.mode == "pipeline":
-        redis_client = init_pipeline(program_start_time, configuration, payload, int(configuration.get("function_invoke_timeout")), int(configuration.get("function_invoke_retries")))
+        redis_client = init_pipeline(program_start_time, configuration, payload)
     elif args.mode == "farm":
-        redis_client = init_farm(program_start_time, configuration, int(args.workers), payload, int(configuration.get("function_invoke_timeout")), int(configuration.get("function_invoke_retries")))
-    time.sleep(10) # Give time for env to settle
+        redis_client = init_farm(program_start_time, configuration, int(args.workers), payload)
 
     # Step 3: Begin monitoring queues
     print(f"[INFO] Monitoring queues for {total_tasks} tasks across {int(args.cycles)} cycles.")
