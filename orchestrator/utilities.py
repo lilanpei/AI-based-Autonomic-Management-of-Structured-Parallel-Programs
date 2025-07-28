@@ -187,7 +187,7 @@ def safe_invoke_function_async(function_name, payload, redis_client, queue_name,
             try:
                 qlen = redis_client.llen(queue_name)
                 print(f"[INFO] Post-invocation queue length for '{queue_name}': {qlen}")
-                N_invocations = replicas - qlen  # Adjust invocations based on current queue length
+                N_invocations = replicas - (qlen - qlen_pre)  # Adjust invocations based on current queue length
             except Exception as e:
                 print(f"[ERROR] Failed to get post-invocation queue length: {e}", file=sys.stderr)
         attempt += 1
@@ -537,7 +537,7 @@ def monitor_worker_replicas(apps_v1_api=None):
     except Exception as e:
         print(f"[WARNING] Could not retrieve worker replicas: {e}")
 
-def wait_for_pods_ready(label_selector, namespace, core_v1_api, program_start_time, expected_count=1, timeout=60):
+def wait_for_pods_ready(label_selector, namespace, core_v1_api, program_start_time, expected_count=1, timeout=120):
     """
     Wait until the expected number of pods with the given label are Running and Ready,
     and ensure that no pod remains in a non-Running state.
@@ -561,7 +561,7 @@ def wait_for_pods_ready(label_selector, namespace, core_v1_api, program_start_ti
             return True
 
         retrying_time = (get_utc_now() - program_start_time).total_seconds()
-        print(f"[INFO] {len(ready_pods)}/{expected_count} ready... retrying {attempt} time(s) at {retrying_time:.2f}s")
+        print(f"[INFO] {len(ready_pods)}/{expected_count} {label_selector} pod(s) ready... retrying {attempt} time(s) at {retrying_time:.2f}s")
         attempt += 1
         time.sleep(1)
 

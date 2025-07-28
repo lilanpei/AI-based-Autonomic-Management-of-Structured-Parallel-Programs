@@ -64,15 +64,15 @@ def analyze_output_queue(redis_client, total_tasks):
     avg_collect_time = total_collect_time / total_results
     qos_percentage = (qos_exceed_count / total_results) * 100
 
-    print("\n[OUTPUT QUEUE ANALYSIS]")
-    print(f"  Total Results         : {total_results}")
-    print(f"  Total Emit Time       : {total_emit_time:.4f} sec")
-    print(f"  Total Work Time       : {total_work_time:.4f} sec")
-    print(f"  Total Collect Time    : {total_collect_time:.4f} sec")
-    print(f"  QoS Exceed Count      : {qos_exceed_count} ({qos_percentage:.2f}%)")
-    print(f"  Avg Emit Time         : {avg_emit_time:.4f} sec")
-    print(f"  Avg Work Time         : {avg_work_time:.4f} sec")
-    print(f"  Avg Collect Time      : {avg_collect_time:.4f} sec")
+    print("\n[INFO][OUTPUT QUEUE ANALYSIS]")
+    print(f"[INFO]  Total Results         : {total_results}")
+    print(f"[INFO]  Total Emit Time       : {total_emit_time:.4f} sec")
+    print(f"[INFO]  Total Work Time       : {total_work_time:.4f} sec")
+    print(f"[INFO]  Total Collect Time    : {total_collect_time:.4f} sec")
+    print(f"[INFO]  QoS Exceed Count      : {qos_exceed_count} ({qos_percentage:.2f}%)")
+    print(f"[INFO]  Avg Emit Time         : {avg_emit_time:.4f} sec")
+    print(f"[INFO]  Avg Work Time         : {avg_work_time:.4f} sec")
+    print(f"[INFO]  Avg Collect Time      : {avg_collect_time:.4f} sec")
 
 
 def monitor_queues(program_start_time, interval=3, total_tasks=1000, feedback_enabled=False, configuration=None, redis_client=None):
@@ -136,13 +136,13 @@ def monitor_queues(program_start_time, interval=3, total_tasks=1000, feedback_en
 
             end_time = (get_utc_now() - program_start_time).total_seconds()
             print(f"\n[TIMER] Program/Monitoring completed at [{end_time:.4f}] seconds.")
-            for index, raw in enumerate(results):
-                result = json.loads(raw)
-                print(f"[INFO] Result {index} (task_id: {result.get("task_id")}):")
-                print(f"[INFO]  Emit Time    : {result.get("task_emit_time"):.4f} sec")
-                print(f"[INFO]  Collect Time : {result.get("task_collect_time"):.4f} sec")
-                print(f"[INFO]  Compute Time : {result.get("task_work_time"):.4f} sec")
-                print(f"[INFO] result: {result}")
+            # for index, raw in enumerate(results):
+            #     result = json.loads(raw)
+            #     print(f"[DEBUG] Result {index} (task_id: {result.get("task_id")}):")
+            #     print(f"[DEBUG]  Emit Time    : {result.get("task_emit_time"):.4f} sec")
+            #     print(f"[DEBUG]  Collect Time : {result.get("task_collect_time"):.4f} sec")
+            #     print(f"[DEBUG]  Compute Time : {result.get("task_work_time"):.4f} sec")
+            #     print(f"[DEBUG] result: {result}")
 
             print(f"\n[INFO] All {total_tasks} tasks completed at {end_time:.4f} seconds.")
             print(f"[TIMER] Total monitoring time: [{(end_time - monitoring_start_time):.4f}] seconds.")
@@ -172,6 +172,7 @@ def main():
     parser.add_argument('--feedback', action=argparse.BooleanOptionalAction, help='Enable collector feedback')
     parser.add_argument('--tasks', type=int, default=100, help='Number of tasks to generate')
     parser.add_argument('--cycles', type=int, default=2, help='Number of cycles to generate tasks')
+    parser.add_argument('--window', type=int, default=30, help='Duration of the task generation window in seconds')
     parser.add_argument('--workers', type=int, default=1, help='Number of workers (used only in farm mode)')
 
     args = parser.parse_args()
@@ -217,7 +218,7 @@ def main():
 
     # Step 3: Start task generator script
     print(f"[INFO] Starting task generator with {args.tasks} tasks and {args.cycles} cycles with feedback={feedback_flag} at {(get_utc_now() - program_start_time).total_seconds():.4f} seconds")
-    run_script("task_generator.py", [str(args.tasks), str(args.cycles), str(feedback_flag)])
+    run_script("task_generator.py", [str(args.tasks), str(args.cycles), str(feedback_flag), str(args.window)])
 
 if __name__ == "__main__":
     main()

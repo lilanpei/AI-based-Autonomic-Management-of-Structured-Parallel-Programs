@@ -153,52 +153,57 @@ for ax in axes:
 plt.tight_layout()
 plt.savefig(f"{plot_output_dir}/scaling_metrics.png", dpi=600)
 
-# ------------------ FIGURE 4: Time METRICS ------------------
-fig4, axes4 = plt.subplots(nrows=2, ncols=2, figsize=(12, 8))
+# ------------------ FIGURE 4: SCATTER TIME METRICS PLOT ------------------
+fig4, ax4 = plt.subplots(nrows=2, ncols=2, figsize=(12, 8))
+colors = plt.cm.tab10.colors
+axes = ax4.flatten()
 
-# Environment Initialization times
-axes4[0, 0].plot(workers, avg_env_init_times, 'o-', label='Env Init Time')
-axes4[0, 0].set_xlabel("Number of Workers")
-axes4[0, 0].set_ylabel('Time (s)')
-axes4[0, 0].grid(True)
-axes4[0, 0].set_xscale('log', base=2)
-axes4[0, 0].set_yscale('log', base=2)
-axes4[0, 0].set_xticks(workers)
-axes4[0, 0].set_xticklabels(workers)
-axes4[0, 0].set_title(f"Environment Init Time vs. Number of Workers")
+# Define the keys you want to plot
+plot_keys = ["Env Init Time", "Farm Init Time", "Task Run Time", "Program Total Time"]
 
-# Initialization times
-axes4[0, 1].plot(workers, avg_init_times, 'o-', label='Init Time')
-axes4[0, 1].set_xlabel("Number of Workers")
-axes4[0, 1].set_ylabel('Time (s)')
-axes4[0, 1].grid(True)
-axes4[0, 1].set_xscale('log', base=2)
-axes4[0, 1].set_yscale('log', base=2)
-axes4[0, 1].set_xticks(workers)
-axes4[0, 1].set_xticklabels(workers)
-axes4[0, 1].set_title(f"Initialization Time vs. Number of Workers")
+for idx, label in enumerate(plot_keys):
+    data = timing_data[label]
+    ax = axes[idx]
+    x, y = [], []
+    for w in sorted(data.keys()):
+        x += [w] * len(data[w])
+        y += data[w]
+    ax.scatter(x, y, label=label, color=colors[idx % len(colors)])
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(workers)
+    ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
+    ax.set_xlabel("Number of Workers")
+    ax.set_ylabel("Time (s)")
+    ax.set_title(f"Scatter Plot: {label}")
+    ax.grid(True)
+    ax.legend()
 
-# Farm Initialization times
-axes4[1, 0].plot(workers, avg_farm_init_times, 'o-', label='Farm Init Time')
-axes4[1, 0].set_xlabel("Number of Workers")
-axes4[1, 0].set_ylabel('Time (s)')
-axes4[1, 0].grid(True)
-axes4[1, 0].set_xscale('log', base=2)
-axes4[1, 0].set_yscale('log', base=2)
-axes4[1, 0].set_xticks(workers)
-axes4[1, 0].set_xticklabels(workers)
-axes4[1, 0].set_title(f"Farm Init Time vs. Number of Workers")
+plt.tight_layout()
+plt.savefig(f"{plot_output_dir}/scatter_per_time_metrics.png", dpi=600)
 
-# Total Runtime
-axes4[1, 1].plot(workers, avg_tot_times, 'o-', label='Total Time')
-axes4[1, 1].set_xlabel("Number of Workers")
-axes4[1, 1].set_ylabel('Time (s)')
-axes4[1, 1].grid(True)
-axes4[1, 1].set_xscale('log', base=2)
-axes4[1, 1].set_yscale('log', base=2)
-axes4[1, 1].set_xticks(workers)
-axes4[1, 1].set_xticklabels(workers)
-axes4[1, 1].set_title(f"Total Runtime vs. Number of Workers")
+# ------------------ FIGURE 5: ERROR BAR TIME METRICS PLOT ------------------
+fig5, ax5 = plt.subplots(nrows=2, ncols=2, figsize=(12, 8))
+axes = ax5.flatten()
+colors = plt.cm.tab10.colors
 
-fig4.tight_layout()
-fig4.savefig(f"{plot_output_dir}/Time_metrics.png", dpi=600)
+# Keys to plot
+plot_keys = ["Env Init Time", "Farm Init Time", "Task Run Time", "Program Total Time"]
+
+for idx, label in enumerate(plot_keys):
+    data = timing_data[label]
+    means = [np.mean(data[w]) for w in workers]
+    stds = [np.std(data[w]) for w in workers]
+
+    ax = axes[idx]
+    ax.errorbar(workers, means, yerr=stds, label=label, fmt='o-', color=colors[idx % len(colors)], capsize=3)
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(workers)
+    ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
+    ax.set_xlabel("Number of Workers")
+    ax.set_ylabel("Time (s)")
+    ax.set_title(f"{label} (Avg ± Std) vs. Number of Workers")
+    ax.grid(True)
+    ax.legend()
+
+plt.tight_layout()
+plt.savefig(f"{plot_output_dir}/errorbar_per_time_metrics.png", dpi=600)

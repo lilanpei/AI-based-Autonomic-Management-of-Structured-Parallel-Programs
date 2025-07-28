@@ -1,0 +1,12 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  podSubnet: "10.244.0.0/16" # avoid IP exhaustion
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: KubeletConfiguration
+        apiVersion: kubelet.config.k8s.io/v1beta1
+        maxPods: 250 # increase max pods per node
+        cpuCFSQuota: false  # Disable strict CPU throttling

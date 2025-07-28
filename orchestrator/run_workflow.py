@@ -78,7 +78,49 @@ def run_commands_with_logs():
         #         "--max-log-requests=34"
         #     ],
         #     "log_file": f"{log_dir}/logs_queue-worker_{worker_suffix}_{timestamp}.txt"
-        # }
+        # },
+        # {
+        #     "cmd": [
+        #         "kubectl", "describe", "pods", "emitter",
+        #         "-n", "openfaas-fn"
+        #     ],
+        #     "log_file": f"{log_dir}/logs_emitter_describe_{worker_suffix}_{timestamp}.txt"
+        # },
+        # {
+        #     "cmd": [
+        #         "kubectl", "describe", "pods", "worker",
+        #         "-n", "openfaas-fn"
+        #     ],
+        #     "log_file": f"{log_dir}/logs_worker_describe_{worker_suffix}_{timestamp}.txt"
+        # },
+        # {
+        #     "cmd": [
+        #         "kubectl", "describe", "pods", "collector",
+        #         "-n", "openfaas-fn"
+        #     ],
+        #     "log_file": f"{log_dir}/logs_collector_describe_{worker_suffix}_{timestamp}.txt"
+        # },
+        # {
+        #     "cmd": [
+        #         "kubectl", "describe", "pods", "nats",
+        #         "-n", "openfaas"
+        #     ],
+        #     "log_file": f"{log_dir}/logs_nats_{worker_suffix}_{timestamp}.txt"
+        # },
+        # {
+        #     "cmd": [
+        #         "kubectl", "describe", "pods", "gateway",
+        #         "-n", "openfaas"
+        #     ],
+        #     "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
+        # },
+        {
+            "cmd": [
+                "kubectl", "describe", "pods", "queue-worker",
+                "-n", "openfaas"
+            ],
+            "log_file": f"{log_dir}/logs_queue-worker_{worker_suffix}_{timestamp}.txt"
+        }
     ]
 
     run_worker_scale_down_enabled = False
@@ -98,11 +140,14 @@ def run_commands_with_logs():
 
         controller_proc.wait()
         if controller_proc.returncode == 0:
-            # Step 2: Run all other logging commands
+            # Step 2: Run all other logging commands (with 2s timeout)
             for cmd_info in other_cmds:
                 with open(cmd_info["log_file"], "w") as log_file:
                     proc = subprocess.Popen(cmd_info["cmd"], stdout=log_file, stderr=subprocess.STDOUT, text=True)
                     print(f"Started: {' '.join(cmd_info['cmd'])} → {cmd_info['log_file']}")
+                    time.sleep(5)
+                    proc.terminate()
+                    print(f"[INFO] Terminated logging subprocess for {' '.join(cmd_info['cmd'])}")
             print(f"✅ Completed: {' '.join(controller_cmd['cmd'])}")
         else:
             print(f"❌ Failed (exit {controller_proc.returncode}): {' '.join(controller_cmd['cmd'])} → {log_file}")

@@ -101,7 +101,7 @@ def generate_and_push_tasks(num_tasks, redis_client, input_queue, program_start_
 
     print(f"[INFO] Task generation complete: {num_tasks} tasks pushed to '{input_queue}'.")
 
-def task_producer(requests_in_window, redis_client, input_queue, program_start_time, deadline_coeff, deadline_cap, deadline_floor, window_duration=30):
+def task_producer(requests_in_window, redis_client, input_queue, program_start_time, deadline_coeff, deadline_cap, deadline_floor, window_duration):
     """
     Produces tasks over a time window with Poisson-distributed inter-arrival times.
 
@@ -137,15 +137,16 @@ def main():
         sys.exit(1)
     task_generation_start_time = (get_utc_now() - program_start_time).total_seconds()
     print(f"[TIMER] Task generation started at [{task_generation_start_time:.4f}] seconds.")
-    if len(sys.argv) != 4:
-        print("Usage: python task_generator.py <number_of_tasks_to_generate> <num_cycles> <feedback_enabled>")
-        print("Example: python task_generator.py 100 10 False")
+    if len(sys.argv) != 5:
+        print("Usage: python task_generator.py <number_of_tasks_to_generate> <num_cycles> <feedback_enabled> <window_duration>")
+        print("Example: python task_generator.py 100 10 False 30")
         sys.exit(1)
 
     try:
         num_tasks = int(sys.argv[1])
         num_cycles = int(sys.argv[2])
         feedback_flag = sys.argv[3].lower() == "true"
+        window_duration = int(sys.argv[4])
         if num_cycles <= 0:
             raise ValueError("Number of cycles must be a positive integer.")
         if num_tasks <= 0:
@@ -153,7 +154,7 @@ def main():
     except ValueError as ve:
         print(f"[ERROR] Invalid task number: {ve}", file=sys.stderr)
         sys.exit(1)
-    print(f"[INFO] Generating {num_tasks} tasks across {num_cycles} cycles with feedback={feedback_flag}")
+    print(f"[INFO] Generating {num_tasks} tasks across {num_cycles} cycles with window_duration={window_duration} and feedback={feedback_flag}")
     configuration = get_config()
     deadline_coeff = configuration.get("deadline_coeff")
     deadline_cap = configuration.get("deadline_cap")
@@ -172,11 +173,11 @@ def main():
 
     np.random.seed(29)  # for reproducibility
 
-    # simulate multiple runs (num_cycles cycles of 30 seconds each)
-    print(f"[INFO] Starting task generation across {num_tasks} tasks over {num_cycles} cycles of 30 seconds each.")
+    # simulate multiple runs (num_cycles cycles of window_duration seconds each)
+    print(f"[INFO] Starting task generation across {num_tasks} tasks over {num_cycles} cycles of {window_duration} seconds each.")
     for cycle in range(num_cycles):
-        print(f"\n[CYCLE {cycle+1}] Generating {num_tasks} tasks over 30s...")
-        task_producer(num_tasks, redis_client, configuration.get('input_queue_name'), program_start_time, deadline_coeff, deadline_cap, deadline_floor)
+        print(f"\n[CYCLE {cycle+1}] Generating {num_tasks} tasks over {window_duration}s...")
+        task_producer(num_tasks, redis_client, configuration.get('input_queue_name'), program_start_time, deadline_coeff, deadline_cap, deadline_floor, window_duration=window_duration)
 
     task_generation_end_time = (get_utc_now() - program_start_time).total_seconds()
     print(f"[TIMER] Task generation completed at [{task_generation_end_time:.4f}] seconds, across all cycles in [{(task_generation_end_time - task_generation_start_time):.4f}] seconds.")
