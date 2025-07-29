@@ -6,7 +6,6 @@ import sys
 
 # Add the parent directory of 'orchestrator' to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from orchestrator.utilities import get_config
 
 configuration = get_config()
@@ -22,6 +21,7 @@ timer_env_end = re.compile(r"\[TIMER\] Environment initialization completed at \
 timer_farm_end = re.compile(r"\[TIMER\] Farm initialization completed at \[(.*?)\] seconds.")
 timer_task_start = re.compile(r"\[TIMER\] Task generation started at \[(.*?)\] seconds.")
 timer_program_end = re.compile(r"\[TIMER\] Program/Monitoring completed at \[(.*?)\] seconds.")
+qos_pattern = re.compile(r"\[INFO\]\s+QoS Exceed Count\s+:\s+\d+\s+\(([\d.]+)%\)")
 
 # Step 1: Gather and sort log files
 log_groups = {}
@@ -32,15 +32,14 @@ for fname in os.listdir(log_dir):
         t = int(match.group(2))
         log_groups.setdefault(w, []).append((t, fname))
 
-# Keep only the last n (by timestamp) for each worker count
-selected_logs = []
+selected_logs = [] # Keep only the last n (by timestamp) for each worker count
 for w, logs in log_groups.items():
-    logs.sort()  # sort by time
+    logs.sort() # Sort by timestamp
     if last_n != "None" and last_n.isdigit():
-        last_n = int(last_n)
-        if len(logs) > last_n:
-            logs = logs[-last_n:]
     # Extend selected logs with the last n logs for this worker count
+        last_n_int = int(last_n)
+        if len(logs) > last_n_int:
+            logs = logs[-last_n_int:]
     selected_logs.extend([(w, fname) for _, fname in logs])
 
 # Step 2: Parse selected logs
@@ -51,11 +50,13 @@ timing_data = {
     "Task Run Time": {},
     "Program Total Time": {}
 }
+qos_exceed_data = {}
 
 for w, fname in selected_logs:
     with open(os.path.join(log_dir, fname)) as f:
+        lines = f.readlines()
         env_end = farm_end = task_start = prog_end = None
-        for line in f:
+        for line in lines:
             if "Environment initialization completed" in line:
                 env_end = float(timer_env_end.search(line).group(1))
                 timing_data["Env Init Time"].setdefault(w, []).append(env_end)
@@ -71,6 +72,13 @@ for w, fname in selected_logs:
                 if task_start is not None:
                     timing_data["Task Run Time"].setdefault(w, []).append(prog_end - task_start)
                 timing_data["Program Total Time"].setdefault(w, []).append(prog_end)
+
+        for line in reversed(lines):
+            match = qos_pattern.search(line)
+            if match:
+                qos_percentage = float(match.group(1))
+                qos_exceed_data.setdefault(w, []).append(qos_percentage)
+                break
 
 # Step 3: Prepare data
 workers = sorted(set(k for d in timing_data.values() for k in d))
@@ -89,7 +97,7 @@ ax1.set_xticks(workers)
 ax1.get_xaxis().set_major_formatter(plt.ScalarFormatter())
 ax1.set_xlabel("Number of Workers")
 ax1.set_ylabel("Time (s)")
-ax1.set_title(f"Scatter Plot: Raw Timings vs. Number of Workers")
+ax1.set_title("Scatter Plot: Raw Timings vs. Number of Workers")
 ax1.grid(True)
 ax1.legend()
 plt.tight_layout()
@@ -106,7 +114,7 @@ ax2.set_xticks(workers)
 ax2.get_xaxis().set_major_formatter(plt.ScalarFormatter())
 ax2.set_xlabel("Number of Workers")
 ax2.set_ylabel("Time (s)")
-ax2.set_title(f"Error Bar Plot: Avg ± Std Timings vs. Number of Workers")
+ax2.set_title("Error Bar Plot: Avg ± Std Timings vs. Number of Workers")
 ax2.grid(True)
 ax2.legend()
 plt.tight_layout()
@@ -118,29 +126,25 @@ avg_run_times = [np.mean(timing_data["Task Run Time"][w]) for w in workers]
 avg_env_init_times = [np.mean(timing_data["Env Init Time"][w]) for w in workers]
 avg_farm_init_times = [np.mean(timing_data["Farm Init Time"][w]) for w in workers]
 avg_init_times = [np.mean(timing_data["Total Init Time"][w]) for w in workers]
-avg_run_times = [np.mean(timing_data["Task Run Time"][w]) for w in workers]
 avg_tot_times = [np.mean(timing_data["Program Total Time"][w]) for w in workers]
 baseline = avg_run_times[0]
 speedups = [baseline / t for t in avg_run_times]
 efficiencies = [s / w for s, w in zip(speedups, workers)]
 
 fig3, axes = plt.subplots(1, 3, figsize=(15, 4))
-
 # Runtime
 axes[0].plot(workers, avg_run_times, 'o-', label='Runtime')
-axes[0].set_title(f"Runtime vs. Number of Workers")
+axes[0].set_title("Runtime vs. Number of Workers")
 axes[0].set_ylabel("Time (s)")
-
 # Speedup
 axes[1].plot(workers, speedups, 'o-', label='Speedup')
 axes[1].plot(workers, workers, '--', label='Ideal')
-axes[1].set_title(f"Speedup vs. Number of Workers")
-
+axes[1].set_title("Speedup vs. Number of Workers")
 # Efficiency
 axes[2].plot(workers, efficiencies, 'o-', label='Efficiency')
 axes[2].plot(workers, [1 for _ in workers], '--', label='Ideal')
 axes[2].set_ylim(0, 1.1)
-axes[2].set_title(f"Efficiency vs. Number of Workers")
+axes[2].set_title("Efficiency vs. Number of Workers")
 
 for ax in axes:
     ax.set_xscale("log", base=2)
@@ -153,12 +157,9 @@ for ax in axes:
 plt.tight_layout()
 plt.savefig(f"{plot_output_dir}/scaling_metrics.png", dpi=600)
 
-# ------------------ FIGURE 4: SCATTER TIME METRICS PLOT ------------------
+# ------------------ FIGURE 4: SCATTER TIME METRICS ------------------
 fig4, ax4 = plt.subplots(nrows=2, ncols=2, figsize=(12, 8))
-colors = plt.cm.tab10.colors
 axes = ax4.flatten()
-
-# Define the keys you want to plot
 plot_keys = ["Env Init Time", "Farm Init Time", "Task Run Time", "Program Total Time"]
 
 for idx, label in enumerate(plot_keys):
@@ -181,19 +182,14 @@ for idx, label in enumerate(plot_keys):
 plt.tight_layout()
 plt.savefig(f"{plot_output_dir}/scatter_per_time_metrics.png", dpi=600)
 
-# ------------------ FIGURE 5: ERROR BAR TIME METRICS PLOT ------------------
+# ------------------ FIGURE 5: ERROR BAR TIME METRICS ------------------
 fig5, ax5 = plt.subplots(nrows=2, ncols=2, figsize=(12, 8))
 axes = ax5.flatten()
-colors = plt.cm.tab10.colors
-
-# Keys to plot
-plot_keys = ["Env Init Time", "Farm Init Time", "Task Run Time", "Program Total Time"]
 
 for idx, label in enumerate(plot_keys):
     data = timing_data[label]
     means = [np.mean(data[w]) for w in workers]
     stds = [np.std(data[w]) for w in workers]
-
     ax = axes[idx]
     ax.errorbar(workers, means, yerr=stds, label=label, fmt='o-', color=colors[idx % len(colors)], capsize=3)
     ax.set_xscale("log", base=2)
@@ -207,3 +203,40 @@ for idx, label in enumerate(plot_keys):
 
 plt.tight_layout()
 plt.savefig(f"{plot_output_dir}/errorbar_per_time_metrics.png", dpi=600)
+
+# ------------------ FIGURE 6: QOS EXCEEDANCE (Scatter + Error Bar) ------------------
+fig6, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+fig6.suptitle("QoS Exceedance vs. Number of Workers", fontsize=14)
+
+# SCATTER PLOT: individual runs
+for idx, w in enumerate(workers):
+    y_vals = qos_exceed_data[w]
+    x_vals = [w] * len(y_vals)
+    ax1.scatter(x_vals, y_vals, color=colors[idx % len(colors)], label=f"{w} workers")
+
+ax1.set_xscale("log", base=2)
+ax1.set_xticks(workers)
+ax1.get_xaxis().set_major_formatter(plt.ScalarFormatter())
+ax1.set_xlabel("Number of Workers")
+ax1.set_ylabel("QoS Exceed (%)")
+ax1.set_title("Raw QoS Exceedance (per run)")
+ax1.grid(True)
+ax1.legend()
+
+# ERROR BAR PLOT: mean ± std
+qos_means = [np.mean(qos_exceed_data[w]) for w in workers]
+qos_stds = [np.std(qos_exceed_data[w]) for w in workers]
+
+ax2.errorbar(workers, qos_means, yerr=qos_stds, fmt='o-', capsize=4, color='tab:red', label="QoS Exceed (Mean ± Std)")
+ax2.set_xscale("log", base=2)
+ax2.set_xticks(workers)
+ax2.get_xaxis().set_major_formatter(plt.ScalarFormatter())
+ax2.set_xlabel("Number of Workers")
+ax2.set_ylabel("QoS Exceed (%)")
+ax2.set_ylim(0, 105)
+ax2.set_title("QoS Exceedance (Avg ± Std)")
+ax2.grid(True)
+ax2.legend()
+
+plt.tight_layout(rect=[0, 0, 1, 0.95])
+plt.savefig(f"{plot_output_dir}/qos_exceedance_combined.png", dpi=600)
