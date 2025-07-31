@@ -6,8 +6,8 @@ MODE="farm"
 TASKS=1000
 CYCLES=1
 REPEATS=5
-WINDOW_DURATION_LIST=(100 200 300)
-WORKERS_LIST=(1 2 4 8 16 16 32 32 32)
+WINDOW_DURATION_LIST=(30 100 200 300)
+WORKERS_LIST=(32 16 8 4 2 1)
 
 for WINDOW in "${WINDOW_DURATION_LIST[@]}"; do
   for WORKERS in "${WORKERS_LIST[@]}"; do
@@ -25,7 +25,7 @@ for WINDOW in "${WINDOW_DURATION_LIST[@]}"; do
       else
         echo "[SUCCESS] Completed run $i for workers=${WORKERS}"
       fi
-      sleep 10
+      sleep 20 # Sleep to avoid overwhelming the system
     done
   done
 done

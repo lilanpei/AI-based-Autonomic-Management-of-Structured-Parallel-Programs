@@ -19,13 +19,13 @@ deadline_floor: 1
 first_function_invoke_timeout: 1
 first_function_invoke_retries: 50
 function_invoke_timeout: 1
-function_invoke_retries: 6
+function_invoke_retries: 10
 scale_down_timeout: 10
 scale_down_retries: 3
 number_of_most_recent_logs: None
-log_dir: "/home/lanpei/AI-based-Autonomic-Management-of-Structured-Parallel-Programs/orchestrator/logs_farm/0728_1000t_100s"
-plot_output_dir: "/home/lanpei/AI-based-Autonomic-Management-of-Structured-Parallel-Programs/plots/0728_1000t_100s"
-log_tags: None
-  # - "[INFO]"
-  # - "[TIMER]"
-  # - "[ERROR]"
+log_dir: "/home/lanpei/AI-based-Autonomic-Management-of-Structured-Parallel-Programs/orchestrator/logs_farm/0729_100t_30s"
+plot_output_dir: "/home/lanpei/AI-based-Autonomic-Management-of-Structured-Parallel-Programs/plots/0729_100t_30s"
+log_tags: 
+  - "[INFO]"
+  - "[TIMER]"
+  - "[ERROR]"

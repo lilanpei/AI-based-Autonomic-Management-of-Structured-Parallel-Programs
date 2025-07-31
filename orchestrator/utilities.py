@@ -133,69 +133,115 @@ def scale_function_deployment(replica_count, apps_v1_api=None, deployment_name="
         except ApiException as e:
             print(f"[ERROR] Retry failed: {e}", file=sys.stderr)
 
-def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080"):
-    """Asynchronously invoke OpenFaaS function."""
+def wait_for_gateway_ready(url="http://127.0.0.1:8080/healthz", timeout=60):
+    import time, requests
+    for _ in range(timeout):
+        try:
+            if requests.get(url).status_code == 200:
+                print("[INFO] Gateway is available")
+                return
+        except:
+            pass
+        time.sleep(1)
+    raise RuntimeError("[ERROR] Gateway not ready after timeout")
+
+def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080", timeout=5, retries=3, backoff=1):
+    """Asynchronously invoke OpenFaaS function with retry logic."""
     url = f"{gateway_url}/async-function/{function_name}"
     headers = {"Content-Type": "application/json"}
 
-    requests.post(url, json=payload, headers=headers)
-    print(f"[INFO] Async invocation sent for '{function_name}'")
+    for attempt in range(retries):
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            if resp.status_code == 202:
+                print(f"[INFO] Async invocation sent for '{function_name}' (attempt {attempt+1})")
+                return True
+            else:
+                print(f"[WARNING] Unexpected status {resp.status_code} for '{function_name}' (attempt {attempt+1})")
+        except Exception as e:
+            print(f"[ERROR] Invocation error (attempt {attempt+1}): {e}")
+        time.sleep(backoff)
 
+    print(f"[FAILURE] Failed to invoke '{function_name}' after {retries} attempts.")
+    return False
 
-def safe_invoke_function_async(function_name, payload, redis_client, queue_name, replicas=1, gateway_url="http://127.0.0.1:8080", timeout=1, retries=2):
+def safe_invoke_function_async(
+    function_name,
+    payload,
+    redis_client,
+    queue_name,
+    replicas=1,
+    gateway_url="http://127.0.0.1:8080",
+    timeout=1,
+    retries=2
+):
     attempt = 0
+
+    # Check Redis queue before starting
     try:
         qlen_pre = redis_client.llen(queue_name)
         print(f"[INFO] Pre-invocation queue length for '{queue_name}': {qlen_pre}")
     except redis.exceptions.ConnectionError as e:
         print(f"[ERROR] Redis connection error: {e}. Retrying...", file=sys.stderr)
         redis_client = get_redis_client_with_retry()
-        try:
-            qlen_pre = redis_client.llen(queue_name)
-            print(f"[INFO] Pre-invocation queue length for '{queue_name}': {qlen_pre}")
-        except Exception as e:
-            print(f"[ERROR] Failed to get pre-invocation queue length: {e}", file=sys.stderr)
-            sys.exit(1)
 
-    N_invocations = replicas
+    # Check port-forwarding recovery
+    if not is_port_in_use(8080):
+        print("[INFO] Gateway port 8080 not in use. Re-forwarding...")
+        port_forward("openfaas", "gateway", 8080, 8080)
+
+    if not is_port_in_use(6379):
+        print("[INFO] Redis port 6379 not in use. Re-forwarding...")
+        port_forward("redis", "redis-master", 6379, 6379)
+
+    wait_for_gateway_ready()
+
+    try:
+        qlen_pre = redis_client.llen(queue_name)
+        print(f"[INFO] Pre-invocation queue length for '{queue_name}': {qlen_pre}")
+    except Exception as e:
+        print(f"[ERROR] Failed to get pre-invocation queue length: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    for i in range(replicas):
+        print(f"[INFO] Invoking {function_name} ({i+1}/{replicas})")
+        success = invoke_function_async(
+            function_name,
+            payload,
+            gateway_url=gateway_url,
+            timeout=5,
+            retries=3,
+            backoff=1
+        )
+        if not success:
+            print(f"[WARN] One invocation failed for '{function_name}'")
+        time.sleep(0.1)  # Allow some time for the function to process
+
     while attempt <= retries:
-        try:
-            for _ in range(N_invocations):
-                invoke_function_async(function_name, payload, gateway_url)
-
-            time.sleep(timeout)
-            qlen = redis_client.llen(queue_name)
-            if qlen == qlen_pre+replicas:
-                print(f"[INFO][SUCCESS] {qlen}/{qlen_pre+replicas} {function_name} function invoked.")
-                return
-            else:
-                print(f"[INFO][WARNING] Only {qlen}/{qlen_pre+replicas} {function_name} functions invoked. Retrying…")
-        except Exception as e:
-            print(f"[ERROR] Invocation error: {e}", file=sys.stderr)
-            print("[INFO] Attempting to port-forward to recover...")
-            if not is_port_in_use(8080):
-                print("[INFO] Port 8080 is not in use, attempting to port-forward...")
-                # Attempt to port-forward if the port is not in use
-                port_forward("openfaas", "gateway", 8080, 8080)
-            if not is_port_in_use(6379):
-                print("[INFO] Port 6379 is not in use, attempting to port-forward...")
-                # Attempt to port-forward Redis if the port is not in use
-                port_forward("redis", "redis-master", 6379, 6379)
-            if not redis_client.ping():
-                print("[INFO] Redis client is not connected, reinitializing...")
-                redis_client = get_redis_client_with_retry()  # Reinitialize Redis client
-            try:
-                qlen = redis_client.llen(queue_name)
-                print(f"[INFO] Post-invocation queue length for '{queue_name}': {qlen}")
-                N_invocations = replicas - (qlen - qlen_pre)  # Adjust invocations based on current queue length
-            except Exception as e:
-                print(f"[ERROR] Failed to get post-invocation queue length: {e}", file=sys.stderr)
-        attempt += 1
-        print(f"[INFO] Retrying invocation ({attempt}/{retries})...")
         time.sleep(timeout)
+        # Check how many actually landed in the queue
+        try:
+            qlen_post = redis_client.llen(queue_name)
+            print(f"[INFO] Post-invocation queue length: {qlen_post}")
+            expected = qlen_pre + replicas
+            if qlen_post == expected:
+                print(f"[SUCCESS] {qlen_post}/{expected} tasks enqueued.")
+                return
+            elif qlen_post > expected:
+                print(f"[WARN] More tasks enqueued than expected: {qlen_post}/{expected}.")
+            else:
+                print(f"[WARN] Only {qlen_post}/{expected} enqueued. Retrying...")
+        except redis.exceptions.ConnectionError:
+            print(f"[ERROR] Lost Redis connection. Retrying...")
+            redis_client = get_redis_client_with_retry()
+        except Exception as e:
+            print(f"[ERROR] Unexpected Redis error: {e}")
 
-    print(f"[FAILURE] Failed to invoke '{function_name}' after {retries+1} attempts.", file=sys.stderr)
-    os._exit(1)  # Exit with error code
+        attempt += 1
+        print(f"[INFO] Retry attempt {attempt}/{retries}")
+
+    print(f"[FAILURE] Failed to invoke '{function_name}' after {retries + 1} attempts.", file=sys.stderr)
+    os._exit(1)
 
 def async_function(func, *args, **kwargs):
     """
@@ -261,6 +307,34 @@ def delete_pod_by_name(pod_name, namespace="openfaas-fn", core_v1_api=None):
         print(f"[INFO] Deleted pod '{pod_name}'")
     except client.rest.ApiException as e:
         print(f"[ERROR] Failed to delete pod '{pod_name}': {e}", file=sys.stderr)
+
+def delete_pods_by_label(label_selector, namespace="default", core_v1_api=None):
+    if core_v1_api is None:
+        try:
+            config.load_incluster_config()
+        except:
+            try:
+                config.load_kube_config()
+            except Exception as e:
+                print(f"[ERROR] Kubernetes config load failed: {e}", file=sys.stderr)
+                sys.exit(1)
+        core_v1_api = client.CoreV1Api()
+
+    try:
+        pods = core_v1_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector).items
+        if not pods:
+            print(f"[INFO] No pods found with label '{label_selector}' in namespace '{namespace}'.")
+            return
+        for pod in pods:
+            pod_name = pod.metadata.name
+            core_v1_api.delete_namespaced_pod(
+                name=pod_name,
+                namespace=namespace,
+                body=client.V1DeleteOptions()
+            )
+            print(f"[INFO] Deleted pod '{pod_name}' in namespace '{namespace}'.")
+    except client.rest.ApiException as e:
+        print(f"[ERROR] Failed to delete pod(s) with label '{label_selector}': {e}", file=sys.stderr)
 
 def get_function_pod_names(function_name, core_v1_api=None, namespace="openfaas-fn"):
     """Get pod names for a specific OpenFaaS function."""
@@ -364,23 +438,19 @@ def init_farm(program_start_time, configuration, replicas, payload, apps_v1_api=
 
     print(f"[INFO] Invoking functions at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
     safe_invoke_function_async("emitter", payload, redis_client, configuration.get("emitter_start_queue_name"), replicas=1, timeout=configuration.get("first_function_invoke_timeout"), retries=configuration.get("first_function_invoke_retries"))
-    safe_invoke_function_async("worker", payload, redis_client, configuration.get("worker_start_queue_name"), replicas=replicas, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
     safe_invoke_function_async("collector", payload, redis_client, configuration.get("collector_start_queue_name"), replicas=1, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
+    safe_invoke_function_async("worker", payload, redis_client, configuration.get("worker_start_queue_name"), replicas=replicas, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
     print(f"[TIMER] Farm initialization completed at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
 
     return redis_client
 
 def scale_deployments_to_zero_replica(program_start_time, apps_v1_api=None, core_v1_api=None):
     """
-    Scales down all deployments to zero replicas.
+    Scales down emitter, worker, collector deployments to zero replicas.
     This is useful for resetting the environment.
     """
 
-    print(f"[INFO] Scaling down all deployments to 0 at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
-
-    for fn in ["nats", "gateway", "queue-worker"]:
-        scale_function_deployment(0, apps_v1_api=apps_v1_api, deployment_name=fn, namespace="openfaas")
-        print(f"[INFO] Scaled down {fn} deployment to 0 replicas.")
+    print(f"[INFO] Scaling down emitter, worker, collector deployments to 0 at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
 
     for fn in ["emitter", "worker", "collector"]:
         scale_function_deployment(0, apps_v1_api=apps_v1_api, deployment_name=fn, namespace="openfaas-fn")
@@ -402,6 +472,14 @@ def restart_resources(program_start_time, core_v1_api, apps_v1_api):
     This is useful for resetting the environment without explicit deleting the deployments.
     """
     print(f"[INFO] Restarting resources at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
+
+    # Delete pods by label to ensure clean state
+    delete_pods_by_label("app=gateway", namespace="openfaas", core_v1_api=core_v1_api)
+    delete_pods_by_label("app=queue-worker", namespace="openfaas", core_v1_api=core_v1_api)
+    delete_pods_by_label("app=prometheus", namespace="openfaas", core_v1_api=core_v1_api)
+    delete_pods_by_label("app=nats", namespace="openfaas", core_v1_api=core_v1_api)
+
+    # Scale down emitter, worker, collector deployments to 0 replicas
     scale_deployments_to_zero_replica(program_start_time, apps_v1_api=apps_v1_api, core_v1_api=core_v1_api)
 
     # Ensure no port-forward processes are running before starting new ones
@@ -413,10 +491,9 @@ def restart_resources(program_start_time, core_v1_api, apps_v1_api):
         kill_port_forward_process(6379)
         wait_for_port_free(6379)
 
-    for fn in ["nats", "gateway", "queue-worker"]:
-        scale_function_deployment(1, apps_v1_api=apps_v1_api, deployment_name=fn, namespace="openfaas")
-        print(f"[INFO] Scaled down {fn} deployment to 1 replica.")
-        wait_for_pods_ready(f"app={fn}", "openfaas", core_v1_api, program_start_time, 1)
+    scale_function_deployment(1, apps_v1_api=apps_v1_api, deployment_name="queue-worker", namespace="openfaas")
+    print(f"[INFO] Scaled down queue-worker deployment to 1 replica.")
+    wait_for_pods_ready(f"app=queue-worker", "openfaas", core_v1_api, program_start_time, 1)
 
 def kill_port_forward_process(port):
     """Find and kill the kubectl port-forward process using a specific port."""
@@ -478,6 +555,9 @@ def port_forward(namespace, svc_name, local_port, remote_port, retries=6, delay=
                 f"{local_port}:{remote_port}", "-n", namespace
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+            # Wait a moment to ensure port-forward is established
+            time.sleep(3)
+
             if is_port_in_use(local_port):
                 print(f"[SUCCESS] Port-forward for {svc_name} is active on port {local_port}.")
                 return
@@ -537,6 +617,7 @@ def monitor_worker_replicas(apps_v1_api=None):
     except Exception as e:
         print(f"[WARNING] Could not retrieve worker replicas: {e}")
 
+
 def wait_for_pods_ready(label_selector, namespace, core_v1_api, program_start_time, expected_count=1, timeout=120):
     """
     Wait until the expected number of pods with the given label are Running and Ready,
@@ -544,16 +625,25 @@ def wait_for_pods_ready(label_selector, namespace, core_v1_api, program_start_ti
     """
     start_time = (get_utc_now() - program_start_time).total_seconds()
     attempt = 0
-
+    time.sleep(3)  # Allow some time for the deployment to stabilize
     while (get_utc_now() - program_start_time).total_seconds() - start_time < timeout:
         pods = core_v1_api.list_namespaced_pod(
             namespace=namespace, label_selector=label_selector
         ).items
 
+        # Wait until no pods are in non-Running state
+        non_running_pods = [pod for pod in pods if pod.status.phase != "Running"]
+        if non_running_pods:
+            pod_names = [pod.metadata.name for pod in non_running_pods]
+            print(f"[INFO] Waiting for non-Running pods to disappear: {pod_names}")
+            attempt += 1
+            time.sleep(1)
+            continue
+
+        # All pods are Running; now check for readiness
         ready_pods = [
             pod for pod in pods
-            if pod.status.phase == "Running" and
-               all(cs.ready for cs in pod.status.container_statuses or [])
+            if all(cs.ready for cs in (pod.status.container_statuses or []))
         ]
 
         if len(ready_pods) >= expected_count:

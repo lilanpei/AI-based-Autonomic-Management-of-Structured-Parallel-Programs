@@ -18,6 +18,13 @@ functions:
     annotations: # ESSENTIAL for a long-running worker
       com.openfaas.scale.min: "1"
       com.openfaas.retry.attempts: "0"
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "20Mi"
+      limits:
+        cpu: "100m"
+        memory: "100Mi"
 
   worker:
     lang: python3-http-skeleton
@@ -33,6 +40,13 @@ functions:
     annotations: # ESSENTIAL for a long-running worker
       com.openfaas.scale.min: "1"
       com.openfaas.retry.attempts: "0"
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "20Mi"
+      limits:
+        cpu: "100m"
+        memory: "100Mi"
 
   collector:
     lang: python3-http-skeleton
@@ -48,6 +62,13 @@ functions:
     annotations: # ESSENTIAL for a long-running worker
       com.openfaas.scale.min: "1"
       com.openfaas.retry.attempts: "0"
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "20Mi"
+      limits:
+        cpu: "100m"
+        memory: "100Mi"
 
 configuration:
   templates:

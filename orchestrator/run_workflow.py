@@ -53,32 +53,32 @@ def run_commands_with_logs():
         #     "cmd": ["kubectl", "logs", "-n", "openfaas", "deploy/nats"],
         #     "log_file": f"{log_dir}/logs_nats_{worker_suffix}_{timestamp}.txt"
         # },
-        # {
-        #     "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=gateway", "-f"],
-        #     "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
-        # },
         {
-            "cmd": get_xargs_log_cmd("collector", grep_pattern),
-            "log_file": f"{log_dir}/logs_collector_{worker_suffix}_{timestamp}.txt"
-        },
-        {
-            "cmd": get_xargs_log_cmd("emitter", grep_pattern),
-            "log_file": f"{log_dir}/logs_emitter_{worker_suffix}_{timestamp}.txt"
-        },
-        {
-            "cmd": get_xargs_log_cmd("worker", grep_pattern),
-            "log_file": f"{log_dir}/logs_worker_{worker_suffix}_{timestamp}.txt"
+            "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=gateway", "-f", "--previous"],
+            "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
         },
         # {
-        #     "cmd": [
-        #         "kubectl", "logs",
-        #         "-l", "app=queue-worker",
-        #         "-n", "openfaas",
-        #         "--timestamps",
-        #         "--max-log-requests=34"
-        #     ],
-        #     "log_file": f"{log_dir}/logs_queue-worker_{worker_suffix}_{timestamp}.txt"
+        #     "cmd": get_xargs_log_cmd("collector", grep_pattern),
+        #     "log_file": f"{log_dir}/logs_collector_{worker_suffix}_{timestamp}.txt"
         # },
+        # {
+        #     "cmd": get_xargs_log_cmd("emitter", grep_pattern),
+        #     "log_file": f"{log_dir}/logs_emitter_{worker_suffix}_{timestamp}.txt"
+        # },
+        # {
+        #     "cmd": get_xargs_log_cmd("worker", grep_pattern),
+        #     "log_file": f"{log_dir}/logs_worker_{worker_suffix}_{timestamp}.txt"
+        # },
+        {
+            "cmd": [
+                "kubectl", "logs",
+                "-l", "app=queue-worker",
+                "-n", "openfaas",
+                "--timestamps",
+                "--max-log-requests=34"
+            ],
+            "log_file": f"{log_dir}/logs_queue-worker_{worker_suffix}_{timestamp}.txt"
+        },
         # {
         #     "cmd": [
         #         "kubectl", "describe", "pods", "emitter",
@@ -105,21 +105,21 @@ def run_commands_with_logs():
         #         "kubectl", "describe", "pods", "nats",
         #         "-n", "openfaas"
         #     ],
-        #     "log_file": f"{log_dir}/logs_nats_{worker_suffix}_{timestamp}.txt"
+        #     "log_file": f"{log_dir}/logs_nats_describe_{worker_suffix}_{timestamp}.txt"
         # },
-        # {
-        #     "cmd": [
-        #         "kubectl", "describe", "pods", "gateway",
-        #         "-n", "openfaas"
-        #     ],
-        #     "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
-        # },
+        {
+            "cmd": [
+                "kubectl", "describe", "pods", "gateway",
+                "-n", "openfaas"
+            ],
+            "log_file": f"{log_dir}/logs_gateway_describe_{worker_suffix}_{timestamp}.txt"
+        },
         {
             "cmd": [
                 "kubectl", "describe", "pods", "queue-worker",
                 "-n", "openfaas"
             ],
-            "log_file": f"{log_dir}/logs_queue-worker_{worker_suffix}_{timestamp}.txt"
+            "log_file": f"{log_dir}/logs_queue-worker_describe_{worker_suffix}_{timestamp}.txt"
         }
     ]
 
@@ -145,7 +145,7 @@ def run_commands_with_logs():
                 with open(cmd_info["log_file"], "w") as log_file:
                     proc = subprocess.Popen(cmd_info["cmd"], stdout=log_file, stderr=subprocess.STDOUT, text=True)
                     print(f"Started: {' '.join(cmd_info['cmd'])} → {cmd_info['log_file']}")
-                    time.sleep(5)
+                    time.sleep(1)  # Allow some time for the process to start
                     proc.terminate()
                     print(f"[INFO] Terminated logging subprocess for {' '.join(cmd_info['cmd'])}")
             print(f"✅ Completed: {' '.join(controller_cmd['cmd'])}")

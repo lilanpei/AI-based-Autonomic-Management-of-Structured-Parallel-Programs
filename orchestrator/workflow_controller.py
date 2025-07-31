@@ -125,7 +125,7 @@ def monitor_queues(program_start_time, interval=3, total_tasks=1000, feedback_en
         print("\n[QUEUE STATUS]")
         for queue in QUEUE_NAMES:
             length = redis_client.llen(queue)
-            print(f"  {queue}: {length} items")
+            print(f"[INFO]  {queue}: {length} items")
 
         replicas = monitor_worker_replicas(apps_v1_api=apps_v1_api)
         analyze_output_queue(redis_client, total_tasks)

@@ -94,21 +94,24 @@ gateway:
   # https://github.com/openfaas/customers/blob/master/gateway-hpa.yaml
   resources:
     requests:
-      memory: "120Mi"
-      cpu: "100m"
+      cpu: "200m"
+      memory: "200Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
 
   readinessProbe:
-    initialDelaySeconds: 1
-    periodSeconds: 5
+    initialDelaySeconds: 10
+    periodSeconds: 10
     timeoutSeconds: 5
-    failureThreshold: 3
+    failureThreshold: 6
     successThreshold: 1
 
   livenessProbe:
-    initialDelaySeconds: 1
-    periodSeconds: 5
+    initialDelaySeconds: 10
+    periodSeconds: 10
     timeoutSeconds: 5
-    failureThreshold: 3
+    failureThreshold: 6
     successThreshold: 1
 
   topologySpreadConstraints:
@@ -150,8 +153,11 @@ eventWorker:
     format: "console"
   resources:
     requests:
-      memory: "120Mi"
-      cpu: "50m"
+      cpu: "10m"
+      memory: "20Mi"
+    limits:
+      cpu: "100m"
+      memory: "100Mi"
 
 # For OpenFaaS Pro and the Function CRD
 operator:
@@ -216,8 +222,11 @@ faasnetes:
   image: lilanpei/faas-netes:latest
   resources:
     requests:
-      memory: "120Mi"
+      cpu: "10m"
+      memory: "20Mi"
+    limits:
       cpu: "100m"
+      memory: "100Mi"
 
 # The values for jetstreamQueueWorker are merged with those under
 # the "queueWorkerPro" and "queueWorker" section
@@ -282,8 +291,14 @@ queueWorker:
   ackWait: "12h"  # Long enough to avoid redelivery
   resources:
     requests:
-      memory: "120Mi"
-      cpu: "50m"
+      cpu: "10m"
+      memory: "20Mi"
+    limits:
+      cpu: "100m"
+      memory: "100Mi"
+  maxInflight: 1
+  maxRetryAttempts: 2
+  initialRetryWait: 15s
 
 # OpenFaaS Pro
 ## Advanced auto-scaler for scaling functions on RPS, CPU and in-flight requests
@@ -299,10 +314,11 @@ autoscaler:
   enabled: true
   resources:
     requests:
-      memory: "128Mi"
-      cpu: "100m"
+      cpu: "10m"
+      memory: "20Mi"
     limits:
-      memory: "256Mi"
+      cpu: "100m"
+      memory: "100Mi"
 
   # Set to "true" to learn how the autoscaler works, both for horizonal Pod scaling 
   # and for scaling to zero.
@@ -348,8 +364,11 @@ oidcAuthPlugin:
     format: "console"
   resources:
     requests:
-      memory: "120Mi"
-      cpu: "50m"
+      cpu: "10m"
+      memory: "20Mi"
+    limits:
+      cpu: "100m"
+      memory: "100Mi"
 
 iam:
   enabled: false
@@ -385,8 +404,11 @@ prometheus:
     time: 15d
   resources:
     requests:
-      memory: "512Mi"
+      cpu: "10m"
+      memory: "20Mi"
+    limits:
       cpu: "100m"
+      memory: "100Mi"
   annotations: {}
   recordingRules: []
 
@@ -418,8 +440,11 @@ nats:
   image: nats:2.11.4
   resources:
     requests:
-      memory: "120Mi"
+      cpu: "10m"
+      memory: "20Mi"
+    limits:
       cpu: "100m"
+      memory: "100Mi"
 
 ## alertmanager is only used for OpenFaaS CE
 alertmanager:
@@ -475,8 +500,11 @@ ingressOperator:
   create: false
   resources:
     requests:
-      memory: "25Mi"
-      cpu: "50m"
+      cpu: "10m"
+      memory: "20Mi"
+    limits:
+      cpu: "100m"
+      memory: "100Mi"
 
 nodeSelector: {}
 
