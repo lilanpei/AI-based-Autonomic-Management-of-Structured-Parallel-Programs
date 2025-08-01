@@ -17,9 +17,9 @@ deadline_coeff: 2.5e-7
 deadline_cap: 30
 deadline_floor: 1
 first_function_invoke_timeout: 1
-first_function_invoke_retries: 50
+first_function_invoke_retries: 64
 function_invoke_timeout: 1
-function_invoke_retries: 10
+function_invoke_retries: 32
 scale_down_timeout: 10
 scale_down_retries: 3
 number_of_most_recent_logs: None
@@ -29,3 +29,4 @@ log_tags:
   - "[INFO]"
   - "[TIMER]"
   - "[ERROR]"
+  - "[WARNING]"

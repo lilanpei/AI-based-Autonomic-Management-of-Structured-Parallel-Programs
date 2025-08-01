@@ -43,7 +43,6 @@ def handle(event, context):
     send_start_signal(redis_client, start_q, pod_name, (get_utc_now() - program_start_time).total_seconds())
 
     previous_iteration_start = None
-    attempts = 0
 
     while True:
         iteration_start = (get_utc_now() - program_start_time).total_seconds()

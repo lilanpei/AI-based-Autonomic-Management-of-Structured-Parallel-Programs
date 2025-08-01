@@ -234,6 +234,9 @@ def safe_invoke_function_async(
         except redis.exceptions.ConnectionError:
             print(f"[ERROR] Lost Redis connection. Retrying...")
             redis_client = get_redis_client_with_retry()
+            if not is_port_in_use(6379):
+                print("[INFO] Redis port 6379 not in use. Re-forwarding...")
+                port_forward("redis", "redis-master", 6379, 6379)
         except Exception as e:
             print(f"[ERROR] Unexpected Redis error: {e}")
 
@@ -452,6 +455,11 @@ def scale_deployments_to_zero_replica(program_start_time, apps_v1_api=None, core
 
     print(f"[INFO] Scaling down emitter, worker, collector deployments to 0 at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
 
+    for fn in ["queue-worker", "gateway", "nats", "prometheus"]:
+        scale_function_deployment(0, apps_v1_api=apps_v1_api, deployment_name=fn, namespace="openfaas")
+        print(f"[INFO] Scaled down {fn} deployment to 0 replicas.")
+
+
     for fn in ["emitter", "worker", "collector"]:
         scale_function_deployment(0, apps_v1_api=apps_v1_api, deployment_name=fn, namespace="openfaas-fn")
         print(f"[INFO] Scaled down {fn} function deployment to 0 replicas.")
@@ -473,13 +481,7 @@ def restart_resources(program_start_time, core_v1_api, apps_v1_api):
     """
     print(f"[INFO] Restarting resources at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
 
-    # Delete pods by label to ensure clean state
-    delete_pods_by_label("app=gateway", namespace="openfaas", core_v1_api=core_v1_api)
-    delete_pods_by_label("app=queue-worker", namespace="openfaas", core_v1_api=core_v1_api)
-    delete_pods_by_label("app=prometheus", namespace="openfaas", core_v1_api=core_v1_api)
-    delete_pods_by_label("app=nats", namespace="openfaas", core_v1_api=core_v1_api)
-
-    # Scale down emitter, worker, collector deployments to 0 replicas
+    # Scale down queue-worker, gateway, nats, prometheus, emitter, worker, collector deployments to 0 replicas
     scale_deployments_to_zero_replica(program_start_time, apps_v1_api=apps_v1_api, core_v1_api=core_v1_api)
 
     # Ensure no port-forward processes are running before starting new ones
@@ -491,7 +493,15 @@ def restart_resources(program_start_time, core_v1_api, apps_v1_api):
         kill_port_forward_process(6379)
         wait_for_port_free(6379)
 
-    scale_function_deployment(1, apps_v1_api=apps_v1_api, deployment_name="queue-worker", namespace="openfaas")
+    scale_function_deployment(1, apps_v1_api=apps_v1_api, namespace="openfaas", deployment_name="nats")
+    print(f"[INFO] Scaled up nats deployment to 1 replica.")
+    wait_for_pods_ready(f"app=nats", "openfaas", core_v1_api, program_start_time, 1)
+
+    scale_function_deployment(1, apps_v1_api=apps_v1_api, namespace="openfaas", deployment_name="gateway")
+    print(f"[INFO] Scaled up gateway deployment to 1 replica.")
+    wait_for_pods_ready(f"app=gateway", "openfaas", core_v1_api, program_start_time, 1)
+
+    scale_function_deployment(1, apps_v1_api=apps_v1_api, namespace="openfaas", deployment_name="queue-worker")
     print(f"[INFO] Scaled down queue-worker deployment to 1 replica.")
     wait_for_pods_ready(f"app=queue-worker", "openfaas", core_v1_api, program_start_time, 1)
 
@@ -648,6 +658,8 @@ def wait_for_pods_ready(label_selector, namespace, core_v1_api, program_start_ti
 
         if len(ready_pods) >= expected_count:
             print(f"[INFO] {len(ready_pods)}/{expected_count} pod(s) ready in namespace '{namespace}' with label '{label_selector}'")
+            if len(ready_pods) > expected_count:
+                print(f"[WARNING] More pods ready than expected: {len(ready_pods)} vs {expected_count}")
             return True
 
         retrying_time = (get_utc_now() - program_start_time).total_seconds()
