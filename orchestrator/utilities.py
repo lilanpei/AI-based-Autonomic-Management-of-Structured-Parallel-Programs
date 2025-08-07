@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import yaml
@@ -96,7 +97,8 @@ def clear_queues(redis_client=None, queue_names=None):
             configuration.get("collector_control_syn_queue_name"),
             configuration.get("emitter_start_queue_name"),
             configuration.get("worker_start_queue_name"),
-            configuration.get("collector_start_queue_name")
+            configuration.get("collector_start_queue_name"),
+            configuration.get("workflow_init_syn_queue_name")
         ]
 
     redis_client = redis_client or get_redis_client_with_retry()
@@ -278,7 +280,7 @@ def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:
     return False
 
 def safe_invoke_function_async(
-    function_name,
+    deployed_function_names,
     payload,
     redis_client,
     queue_name,
@@ -311,10 +313,10 @@ def safe_invoke_function_async(
     if not is_port_in_use(6379):
         print("[INFO] Redis port 6379 not in use. Re-forwarding...")
         port_forward("redis", "redis-master", 6379, 6379)
-
-    for i in range(replicas):
-        function_instance_name = f"{function_name}-{i+1}"
-        print(f"[INFO] Invoking {function_instance_name} ({i+1}/{replicas})")
+    count = 0
+    for function_instance_name in deployed_function_names:
+        count += 1
+        print(f"[INFO] Invoking {function_instance_name} ({count}/{replicas})")
         success = invoke_function_async(
             function_instance_name,
             payload,
@@ -324,7 +326,7 @@ def safe_invoke_function_async(
             backoff=1
         )
         if not success:
-            print(f"[WARNING] One invocation failed for '{function_name}'")
+            print(f"[WARNING] One invocation failed for '{function_instance_name}'")
         time.sleep(0.1)  # Allow some time for the function to process
 
     while attempt <= retries:
@@ -353,7 +355,7 @@ def safe_invoke_function_async(
         attempt += 1
         print(f"[INFO] Retry attempt {attempt}/{retries}")
 
-    print(f"[ERROR] Failed to invoke '{function_name}' after {retries + 1} attempts.", file=sys.stderr)
+    print(f"[ERROR] Failed to invoke after {retries + 1} attempts.", file=sys.stderr)
     os._exit(1)
 
 def async_function(func, *args, **kwargs):
@@ -505,9 +507,9 @@ def init_pipeline(program_start_time, configuration, payload, apps_v1_api=None, 
                 sys.exit(1)
         apps_v1_api = client.AppsV1Api()
 
-    deploy_function(function_name="emitter", replicas=1, max_retries=3, delay=1)
-    deploy_function(function_name="collector", replicas=1, max_retries=3, delay=1)
-    deploy_function(function_name="worker", replicas=1, max_retries=3, delay=1)
+    deployed_emitter_names = deploy_function(function_name_prefix="emitter", replicas=1, max_retries=3, delay=1)
+    deployed_collector_names = deploy_function(function_name_prefix="collector", replicas=1, max_retries=3, delay=1)
+    deployed_worker_names = deploy_function(function_name_prefix="worker", replicas=1, max_retries=3, delay=1)
 
     scale_function_deployment(3, apps_v1_api=apps_v1_api, deployment_name="queue-worker", namespace="openfaas")
     wait_for_pods_ready(f"app=queue-worker", "openfaas", core_v1_api, program_start_time, 3) # Wait for queue worker to stabilize
@@ -519,13 +521,23 @@ def init_pipeline(program_start_time, configuration, payload, apps_v1_api=None, 
     redis_client = get_redis_client_with_retry()
 
     print(f"[INFO] Clearing all queues at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
-    clear_all_queues(redis_client)
+    clear_queues(redis_client, None)
 
     print(f"[INFO] Invoking functions at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
-    safe_invoke_function_async("emitter", payload, redis_client, configuration.get("emitter_start_queue_name"), replicas=1, timeout=configuration.get("first_function_invoke_timeout"), retries=configuration.get("first_function_invoke_retries"))
-    safe_invoke_function_async("worker", payload, redis_client, configuration.get("worker_start_queue_name"), replicas=1, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
-    safe_invoke_function_async("collector", payload, redis_client, configuration.get("collector_start_queue_name"), replicas=1, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
+    safe_invoke_function_async(deployed_emitter_names, payload, redis_client, configuration.get("emitter_start_queue_name"), replicas=1, timeout=configuration.get("first_function_invoke_timeout"), retries=configuration.get("first_function_invoke_retries"))
+    safe_invoke_function_async(deployed_worker_names, payload, redis_client, configuration.get("worker_start_queue_name"), replicas=1, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
+    safe_invoke_function_async(deployed_collector_names, payload, redis_client, configuration.get("collector_start_queue_name"), replicas=1, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
     print(f"[TIMER] Pipeline initialization completed at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
+
+    # Send workflow init completed messages
+    message = {
+        "type": "WORKFLOW_INIT",
+        "action": "SYN",
+        "message": "Workflow initialization completed",
+        "SYN_timestamp": (get_utc_now() - program_start_time).total_seconds(),
+        "program_start_time": str(program_start_time)
+    }
+    send_control_messages(message, redis_client, configuration.get("workflow_init_syn_queue_name"), 1)
 
     return redis_client
 
@@ -546,9 +558,9 @@ def init_farm(program_start_time, configuration, replicas, payload, apps_v1_api=
         core_v1_api = client.CoreV1Api()
         apps_v1_api = client.AppsV1Api()
 
-    deploy_function(function_name="emitter", replicas=1, max_retries=3, delay=1)
-    deploy_function(function_name="collector", replicas=1, max_retries=3, delay=1)
-    deploy_function(function_name="worker", replicas=replicas, max_retries=3, delay=1)
+    deployed_emitter_names = deploy_function(function_name_prefix="emitter", replicas=1, max_retries=3, delay=1)
+    deployed_collector_names = deploy_function(function_name_prefix="collector", replicas=1, max_retries=3, delay=1)
+    deployed_worker_names = deploy_function(function_name_prefix="worker", replicas=replicas, max_retries=3, delay=1)
 
     scale_function_deployment(replicas+2, apps_v1_api=apps_v1_api, deployment_name="queue-worker", namespace="openfaas")
     wait_for_pods_ready(f"app=queue-worker", "openfaas", core_v1_api, program_start_time, replicas+2)  # Wait for queue worker to stabilize
@@ -560,14 +572,23 @@ def init_farm(program_start_time, configuration, replicas, payload, apps_v1_api=
     redis_client = get_redis_client_with_retry()
 
     print(f"[INFO] Clearing all queues at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
-    clear_all_queues(redis_client)
+    clear_queues(redis_client, None)
 
     print(f"[INFO] Invoking functions at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
-    safe_invoke_function_async("emitter", payload, redis_client, configuration.get("emitter_start_queue_name"), replicas=1, timeout=configuration.get("first_function_invoke_timeout"), retries=configuration.get("first_function_invoke_retries"))
-    safe_invoke_function_async("collector", payload, redis_client, configuration.get("collector_start_queue_name"), replicas=1, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
-    safe_invoke_function_async("worker", payload, redis_client, configuration.get("worker_start_queue_name"), replicas=replicas, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
+    safe_invoke_function_async(deployed_emitter_names, payload, redis_client, configuration.get("emitter_start_queue_name"), replicas=1, timeout=configuration.get("first_function_invoke_timeout"), retries=configuration.get("first_function_invoke_retries"))
+    safe_invoke_function_async(deployed_collector_names, payload, redis_client, configuration.get("collector_start_queue_name"), replicas=1, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
+    safe_invoke_function_async(deployed_worker_names, payload, redis_client, configuration.get("worker_start_queue_name"), replicas=replicas, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
     print(f"[TIMER] Farm initialization completed at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
 
+    # Send workflow init completed messages
+    message = {
+        "type": "WORKFLOW_INIT",
+        "action": "SYN",
+        "message": "Workflow initialization completed",
+        "SYN_timestamp": (get_utc_now() - program_start_time).total_seconds(),
+        "program_start_time": str(program_start_time)
+    }
+    send_control_messages(message, redis_client, configuration.get("workflow_init_syn_queue_name"), 1)
     return redis_client
 
 def wait_for_deployment_ready(function_name, timeout=60):
@@ -583,14 +604,68 @@ def wait_for_deployment_ready(function_name, timeout=60):
     else:
         print(f"[ERROR] Timeout waiting for {function_name}: {result.stderr}")
 
-def deploy_function(function_name, replicas, max_retries=3, delay=1):
-    """Deploys a function instance with the specified number of replicas."""
-    image = get_config().get(f"{function_name}_image")
-    print(f"[INFO] Deploying function '{function_name}' with {replicas} replicas using image '{image}'...")
-    for i in range(replicas):
-        function_instance_name = f"{function_name}-{i+1}"
-        deploy_function_instance(function_instance_name, image, max_retries, delay)
-        wait_for_deployment_ready(function_instance_name, timeout=60)
+def get_existing_function_indices(function_name_prefix):
+    """
+    Returns a sorted list of all function indices currently deployed (e.g., [1, 2, 3, 5]).
+    """
+    try:
+        result = run_faas_cli(["list", "-q"], capture_output=True)
+        all_functions = result.stdout.strip().splitlines()
+        pattern = re.compile(fr"^{function_name_prefix}-(\d+)$")
+        indices = []
+
+        for fn in all_functions:
+            match = pattern.match(fn)
+            if match:
+                indices.append(int(match.group(1)))
+
+        return sorted(indices)
+    except Exception as e:
+        print(f"[ERROR] Failed to list {function_name_prefix} functions: {e}")
+        return []  # Fail-safe: treat as no functions present
+
+
+def find_next_available_function_names(function_name_prefix, existing_indices, count):
+    """
+    Given existing indices and count, find next `count` available function names.
+    Reuses missing indices first.
+    """
+    allocated = []
+    index = 1
+    existing_set = set(existing_indices)
+
+    while len(allocated) < count:
+        if index not in existing_set:
+            allocated.append(f"{function_name_prefix}-{index}")
+        index += 1
+
+    return allocated
+
+def deploy_function(function_name_prefix, replicas, max_retries=3, delay=1):
+    """
+    Deploys a specified number of replicas for a function using available worker-X names.
+    Includes error handling and reuses freed names if possible.
+    """
+    try:
+        image = get_config().get(f"{function_name_prefix}_image")
+        if not image:
+            raise ValueError(f"No image specified in configuration for function '{function_name_prefix}_image'")
+        print(f"[INFO] Deploying {replicas} new '{function_name_prefix}' function(s) using image '{image}'...")
+
+        existing_indices = get_existing_function_indices(function_name_prefix)
+        target_names = find_next_available_function_names(function_name_prefix, existing_indices, replicas)
+
+        for name in target_names:
+            try:
+                deploy_function_instance(name, image, max_retries, delay)
+                wait_for_deployment_ready(name, timeout=60)
+            except Exception as e:
+                print(f"[ERROR] Failed to deploy or wait for readiness of function '{name}': {e}")
+
+    except Exception as e:
+        print(f"[ERROR] Failed to deploy function group '{function_name_prefix}': {e}")
+
+    return target_names
 
 def deploy_function_instance(function_name, image, max_retries=3, delay=1):
     """
@@ -652,16 +727,6 @@ def scale_deployments_to_zero_replica(program_start_time, apps_v1_api=None, core
     for fn in ["queue-worker", "gateway", "nats"]:
         scale_function_deployment(0, apps_v1_api=apps_v1_api, deployment_name=fn, namespace="openfaas")
         print(f"[INFO] Scaled down {fn} deployment to 0 replicas.")
-
-def clear_all_queues(redis_client):
-    """
-    Clears all Redis queues before generating tasks.
-
-    Args:
-        redis_client (redis.Redis): Redis client instance.
-    """
-    clear_queues(redis_client, None)
-    print("[INFO] Cleared all Redis queues.")
 
 def wait_for_function_pods_terminated(core_v1_api, namespace="openfaas-fn", attempts=60, delay=1):
     """

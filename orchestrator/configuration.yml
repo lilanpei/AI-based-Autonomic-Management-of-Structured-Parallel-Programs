@@ -11,6 +11,7 @@ collector_control_syn_queue_name: collector_control_syn_queue
 emitter_start_queue_name: emitter_start_queue
 worker_start_queue_name: worker_start_queue
 collector_start_queue_name: collector_start_queue
+workflow_init_syn_queue_name: workflow_init_syn_queue
 emitter_image: lilanpei/emitter:latest
 worker_image: lilanpei/worker:latest
 collector_image: lilanpei/collector:latest
@@ -23,8 +24,8 @@ first_function_invoke_timeout: 1
 first_function_invoke_retries: 64
 function_invoke_timeout: 1
 function_invoke_retries: 32
-scale_down_timeout: 10
-scale_down_retries: 3
+scale_down_timeout: 1
+scale_down_retries: 32
 number_of_most_recent_logs: None
 log_dir: "/home/lanpei/AI-based-Autonomic-Management-of-Structured-Parallel-Programs/orchestrator/logs_farm/0729_100t_30s"
 plot_output_dir: "/home/lanpei/AI-based-Autonomic-Management-of-Structured-Parallel-Programs/plots/0729_100t_30s"

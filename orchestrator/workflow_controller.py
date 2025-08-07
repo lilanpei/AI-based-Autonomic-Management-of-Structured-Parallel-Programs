@@ -15,7 +15,8 @@ from utilities import (
     monitor_deployment_replicas,
     async_function,
     send_control_messages,
-    get_utc_now
+    get_utc_now,
+    clear_queues
 )
 
 
@@ -136,6 +137,10 @@ def monitor_queues(program_start_time, interval=3, total_tasks=1000, feedback_en
 
             end_time = (get_utc_now() - program_start_time).total_seconds()
             print(f"\n[TIMER] Program/Monitoring completed at [{end_time:.4f}] seconds.")
+
+            # Reset workflow init flag
+            clear_queues(redis_client, [configuration.get("workflow_init_syn_queue_name")])
+
             for index, raw in enumerate(results):
                 result = json.loads(raw)
                 print(f"[DEBUG] Result {index} (task_id: {result.get("task_id")}):")
