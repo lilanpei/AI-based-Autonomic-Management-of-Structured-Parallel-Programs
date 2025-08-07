@@ -53,10 +53,10 @@ def run_commands_with_logs():
         #     "cmd": ["kubectl", "logs", "-n", "openfaas", "deploy/nats"],
         #     "log_file": f"{log_dir}/logs_nats_{worker_suffix}_{timestamp}.txt"
         # },
-        {
-            "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=gateway", "-f", "--previous"],
-            "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
-        },
+        # {
+        #     "cmd": ["kubectl", "logs", "-n", "openfaas", "-l", "app=gateway", "-f", "--previous"],
+        #     "log_file": f"{log_dir}/logs_gateway_{worker_suffix}_{timestamp}.txt"
+        # },
         # {
         #     "cmd": get_xargs_log_cmd("collector", grep_pattern),
         #     "log_file": f"{log_dir}/logs_collector_{worker_suffix}_{timestamp}.txt"
@@ -144,13 +144,13 @@ def run_commands_with_logs():
             for cmd_info in other_cmds:
                 with open(cmd_info["log_file"], "w") as log_file:
                     proc = subprocess.Popen(cmd_info["cmd"], stdout=log_file, stderr=subprocess.STDOUT, text=True)
-                    print(f"Started: {' '.join(cmd_info['cmd'])} → {cmd_info['log_file']}")
-                    time.sleep(1)  # Allow some time for the process to start
+                    print(f"[INFO] Started: {' '.join(cmd_info['cmd'])} → {cmd_info['log_file']}")
+                    time.sleep(0.1)  # Allow some time for the process to start
                     proc.terminate()
                     print(f"[INFO] Terminated logging subprocess for {' '.join(cmd_info['cmd'])}")
-            print(f"✅ Completed: {' '.join(controller_cmd['cmd'])}")
+            print(f"[INFO] ✅ Completed: {' '.join(controller_cmd['cmd'])}")
         else:
-            print(f"❌ Failed (exit {controller_proc.returncode}): {' '.join(controller_cmd['cmd'])} → {log_file}")
+            print(f"[ERROR] ❌ Failed (exit {controller_proc.returncode}): {' '.join(controller_cmd['cmd'])} → {log_file}")
 
     except KeyboardInterrupt:
         print("\n🛑 KeyboardInterrupt: Terminating processes...")

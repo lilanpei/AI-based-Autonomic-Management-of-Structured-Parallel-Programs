@@ -107,7 +107,7 @@ def clear_queues(redis_client=None, queue_names=None):
         except redis.exceptions.ConnectionError as e:
             print(f"[ERROR] Redis connection failed: {e}", file=sys.stderr)
 
-def scale_function_deployment(replica_count, apps_v1_api=None, deployment_name="worker", namespace="openfaas-fn"):
+def scale_function_deployment(replica_count, apps_v1_api, deployment_name, namespace="openfaas-fn"):
     """Scale a Kubernetes deployment."""
     if apps_v1_api is None:
         try:
@@ -133,19 +133,131 @@ def scale_function_deployment(replica_count, apps_v1_api=None, deployment_name="
         except ApiException as e:
             print(f"[ERROR] Retry failed: {e}", file=sys.stderr)
 
-def wait_for_gateway_ready(url="http://127.0.0.1:8080/healthz", timeout=60):
-    import time, requests
-    for _ in range(timeout):
-        try:
-            if requests.get(url).status_code == 200:
-                print("[INFO] Gateway is available")
-                return
-        except:
-            pass
-        time.sleep(1)
-    raise RuntimeError("[ERROR] Gateway not ready after timeout")
+def get_faas_password():
+    """Retrieve the OpenFaaS password from Kubernetes secret and decode it."""
+    try:
+        # Fetch base64-encoded password from Kubernetes
+        result = subprocess.run(
+            [
+                "kubectl", "get", "secret", "-n", "openfaas", "basic-auth",
+                "-o", "jsonpath={.data.basic-auth-password}"
+            ],
+            capture_output=True, text=True, check=True
+        )
+        encoded_password = result.stdout.strip()
 
-def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080", timeout=5, retries=3, backoff=1):
+        if not encoded_password:
+            raise ValueError("[ERROR] Retrieved empty password from Kubernetes secret.")
+
+        # Decode the password
+        decoded_result = subprocess.run(
+            ["base64", "--decode"],
+            input=encoded_password,
+            capture_output=True, text=True, check=True
+        )
+        return decoded_result.stdout.strip()
+
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"[ERROR] Failed to retrieve or decode OpenFaaS password: {e.stderr.strip()}")
+    except Exception as e:
+        raise RuntimeError(f"[ERROR] Unexpected error in get_faas_password(): {e}")
+
+def login_faas_cli(password, max_attempts=10, delay=1):
+    """Login to faas-cli with the provided password using password-stdin."""
+    print("[INFO] Logging in to faas-cli...")
+
+    for attempt in range(1, max_attempts + 1):
+        proc = subprocess.run(
+            ["faas-cli", "login", "-u", "admin", "--password-stdin"],
+            input=password,
+            env={**os.environ, "OPENFAAS_URL": "http://127.0.0.1:8080"},
+            capture_output=True,
+            text=True
+        )
+
+        if proc.returncode == 0:
+            print("[INFO] faas-cli login successful.")
+            return
+
+        print(f"[WARNING] faas-cli login failed (attempt {attempt}/{max_attempts})")
+        time.sleep(delay)
+
+    raise RuntimeError(f"[ERROR] faas-cli login failed after {max_attempts} attempts: {proc.stderr.strip()}")
+
+def run_faas_cli(args, capture_output=False, check=False):
+    """
+    Runs a faas-cli command with credentials set via environment variables.
+
+    Args:
+        args (list): List of CLI arguments, e.g., ["list", "-q"]
+        capture_output (bool): If True, captures stdout/stderr.
+        check (bool): If True, raises exception on non-zero exit.
+
+    Returns:
+        subprocess.CompletedProcess
+    """
+    # Retrieve password from Kubernetes secret
+    password = get_faas_password()
+
+    # Prepare environment with OpenFaaS credentials
+    env = os.environ.copy()
+    env["OPENFAAS_URL"] = "http://127.0.0.1:8080"
+    env["OPENFAAS_USERNAME"] = "admin"
+    env["OPENFAAS_PASSWORD"] = password
+
+    # Construct the command
+    cmd = ["faas-cli"] + args
+    return subprocess.run(
+        cmd,
+        capture_output=capture_output,
+        text=True,
+        env=env,
+        check=check
+    )
+
+def wait_for_gateway_ready(url="http://127.0.0.1:8080/healthz", timeout=30):
+    """
+    Waits until the OpenFaaS gateway /healthz is reachable and faas-cli is responsive.
+    """
+    print("[INFO] Waiting for OpenFaaS gateway health endpoint...")
+
+    for second in range(timeout):
+        try:
+            response = requests.get(url)
+            if response.status_code == 200:
+                print(f"[INFO] Gateway /healthz passed at {second}s")
+                break
+            else:
+                print(f"[WARNING] /healthz returned status: {response.status_code}")
+        except requests.RequestException as e:
+            print(f"[WARNING] Exception during /healthz check: {e}")
+
+        time.sleep(1)
+    else:
+        raise RuntimeError("[WARNING] Gateway /healthz not ready after timeout")
+
+    # Log in to faas-cli
+    print("[INFO] Waiting for faas-cli to become responsive...")
+    try:
+        password = get_faas_password()
+        login_faas_cli(password)
+    except RuntimeError as e:
+        raise RuntimeError(f"[WARNING] faas-cli login failed: {e}")
+
+    # Confirm faas-cli responds to `list`
+    for attempt in range(timeout):
+        result = run_faas_cli(["list", "-q"], capture_output=True)
+        if result.returncode == 0:
+            print(f"[INFO] faas-cli is responsive at {attempt+1}/{timeout} attempts")
+            return
+        else:
+            if result.stderr:
+                print(f"[WARNING] faas-cli error: {result.stderr.strip()}")
+        time.sleep(1)
+    else:
+        raise RuntimeError("[WARNING] faas-cli not responsive after timeout")
+
+def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:8080", timeout=1, retries=3, backoff=1):
     """Asynchronously invoke OpenFaaS function with retry logic."""
     url = f"{gateway_url}/async-function/{function_name}"
     headers = {"Content-Type": "application/json"}
@@ -162,7 +274,7 @@ def invoke_function_async(function_name, payload, gateway_url="http://127.0.0.1:
             print(f"[ERROR] Invocation error (attempt {attempt+1}): {e}")
         time.sleep(backoff)
 
-    print(f"[FAILURE] Failed to invoke '{function_name}' after {retries} attempts.")
+    print(f"[ERROR] Failed to invoke '{function_name}' after {retries} attempts.")
     return False
 
 def safe_invoke_function_async(
@@ -184,6 +296,12 @@ def safe_invoke_function_async(
     except redis.exceptions.ConnectionError as e:
         print(f"[ERROR] Redis connection error: {e}. Retrying...", file=sys.stderr)
         redis_client = get_redis_client_with_retry()
+        try:
+            qlen_pre = redis_client.llen(queue_name)
+            print(f"[INFO] Pre-invocation queue length for '{queue_name}': {qlen_pre}")
+        except Exception as e:
+            print(f"[ERROR] Failed to get pre-invocation queue length: {e}", file=sys.stderr)
+            sys.exit(1)
 
     # Check port-forwarding recovery
     if not is_port_in_use(8080):
@@ -194,19 +312,11 @@ def safe_invoke_function_async(
         print("[INFO] Redis port 6379 not in use. Re-forwarding...")
         port_forward("redis", "redis-master", 6379, 6379)
 
-    wait_for_gateway_ready()
-
-    try:
-        qlen_pre = redis_client.llen(queue_name)
-        print(f"[INFO] Pre-invocation queue length for '{queue_name}': {qlen_pre}")
-    except Exception as e:
-        print(f"[ERROR] Failed to get pre-invocation queue length: {e}", file=sys.stderr)
-        sys.exit(1)
-
     for i in range(replicas):
-        print(f"[INFO] Invoking {function_name} ({i+1}/{replicas})")
+        function_instance_name = f"{function_name}-{i+1}"
+        print(f"[INFO] Invoking {function_instance_name} ({i+1}/{replicas})")
         success = invoke_function_async(
-            function_name,
+            function_instance_name,
             payload,
             gateway_url=gateway_url,
             timeout=5,
@@ -214,7 +324,7 @@ def safe_invoke_function_async(
             backoff=1
         )
         if not success:
-            print(f"[WARN] One invocation failed for '{function_name}'")
+            print(f"[WARNING] One invocation failed for '{function_name}'")
         time.sleep(0.1)  # Allow some time for the function to process
 
     while attempt <= retries:
@@ -225,12 +335,12 @@ def safe_invoke_function_async(
             print(f"[INFO] Post-invocation queue length: {qlen_post}")
             expected = qlen_pre + replicas
             if qlen_post == expected:
-                print(f"[SUCCESS] {qlen_post}/{expected} tasks enqueued.")
+                print(f"[INFO] [SUCCESS] {qlen_post}/{expected} tasks enqueued.")
                 return
             elif qlen_post > expected:
-                print(f"[WARN] More tasks enqueued than expected: {qlen_post}/{expected}.")
+                print(f"[WARNING] More tasks enqueued than expected: {qlen_post}/{expected}.")
             else:
-                print(f"[WARN] Only {qlen_post}/{expected} enqueued. Retrying...")
+                print(f"[WARNING] Only {qlen_post}/{expected} enqueued. Retrying...")
         except redis.exceptions.ConnectionError:
             print(f"[ERROR] Lost Redis connection. Retrying...")
             redis_client = get_redis_client_with_retry()
@@ -243,7 +353,7 @@ def safe_invoke_function_async(
         attempt += 1
         print(f"[INFO] Retry attempt {attempt}/{retries}")
 
-    print(f"[FAILURE] Failed to invoke '{function_name}' after {retries + 1} attempts.", file=sys.stderr)
+    print(f"[ERROR] Failed to invoke '{function_name}' after {retries + 1} attempts.", file=sys.stderr)
     os._exit(1)
 
 def async_function(func, *args, **kwargs):
@@ -259,8 +369,19 @@ def async_function(func, *args, **kwargs):
     # thread.daemon = True  # Optional: thread dies with the main program
     thread.start()
 
-def get_current_replicas(apps_v1_api, namespace, deployment_name):
-    """Return current number of worker replicas."""
+def get_deployment_replicas(apps_v1_api=None, namespace="openfaas-fn", name_or_prefix=None, exact_match=False):
+    """
+    Returns total replicas for deployments matching a name or prefix.
+
+    Args:
+        apps_v1_api: Kubernetes AppsV1Api client
+        namespace (str): Namespace to search deployments in
+        name_or_prefix (str): Full name or prefix to match
+        exact_match (bool): If True, matches exact name only. If False, matches prefix.
+
+    Returns:
+        int: Total replica count for matched deployments
+    """
     if apps_v1_api is None:
         try:
             config.load_incluster_config()
@@ -271,8 +392,20 @@ def get_current_replicas(apps_v1_api, namespace, deployment_name):
                 print(f"[ERROR] Kubernetes config load failed: {e}", file=sys.stderr)
                 sys.exit(1)
         apps_v1_api = client.AppsV1Api()
-    deployment = apps_v1_api.read_namespaced_deployment(deployment_name, namespace)
-    return deployment.spec.replicas
+
+    try:
+        deployments = apps_v1_api.list_namespaced_deployment(namespace=namespace)
+        total_replicas = 0
+        for deploy in deployments.items:
+            name = deploy.metadata.name
+            if (exact_match and name == name_or_prefix) or (not exact_match and name.startswith(name_or_prefix)):
+                replicas = deploy.spec.replicas or 0
+                total_replicas += replicas
+        return total_replicas
+
+    except Exception as e:
+        print(f"[ERROR] Failed to retrieve deployments in namespace '{namespace}': {e}")
+        return 0
 
 def send_control_messages(message, redis_client, control_syn_q, count):
     """Send control messages to Redis SYN queue."""
@@ -371,20 +504,16 @@ def init_pipeline(program_start_time, configuration, payload, apps_v1_api=None, 
                 print(f"[ERROR] Kubernetes config load failed: {e}", file=sys.stderr)
                 sys.exit(1)
         apps_v1_api = client.AppsV1Api()
-    # Scale worker deployment to 1 replica
-    scale_function_deployment(1, apps_v1_api=apps_v1_api, deployment_name="emitter", namespace="openfaas-fn")
-    scale_function_deployment(1, apps_v1_api=apps_v1_api, deployment_name="worker", namespace="openfaas-fn")
-    scale_function_deployment(1, apps_v1_api=apps_v1_api, deployment_name="collector", namespace="openfaas-fn")
+
+    deploy_function(function_name="emitter", replicas=1, max_retries=3, delay=1)
+    deploy_function(function_name="collector", replicas=1, max_retries=3, delay=1)
+    deploy_function(function_name="worker", replicas=1, max_retries=3, delay=1)
 
     scale_function_deployment(3, apps_v1_api=apps_v1_api, deployment_name="queue-worker", namespace="openfaas")
     wait_for_pods_ready(f"app=queue-worker", "openfaas", core_v1_api, program_start_time, 3) # Wait for queue worker to stabilize
 
-    queue_worker_replicas = get_current_replicas(apps_v1_api=apps_v1_api, namespace="openfaas", deployment_name="queue-worker")
+    queue_worker_replicas = get_deployment_replicas(apps_v1_api=apps_v1_api, namespace="openfaas", name_or_prefix="queue-worker", exact_match=True)
     print(f"[INFO] Queue Worker Replicas for pipeline: {queue_worker_replicas}")
-
-    print(f"[INFO] Port-forwarding services at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
-    port_forward("openfaas", "gateway", 8080, 8080)
-    port_forward("redis", "redis-master", 6379, 6379)
 
     print(f"[INFO] Initializing Redis client at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
     redis_client = get_redis_client_with_retry()
@@ -405,7 +534,6 @@ def init_farm(program_start_time, configuration, replicas, payload, apps_v1_api=
     Initialize the farm by clearing queues and scaling deployments.
     """
     print(f"[TIMER] Farm initializing started at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
-    print(f"[INFO] Scaling to {replicas} worker replicas...")
     if not apps_v1_api or not core_v1_api:
         try:
             config.load_incluster_config()
@@ -417,21 +545,16 @@ def init_farm(program_start_time, configuration, replicas, payload, apps_v1_api=
                 sys.exit(1)
         core_v1_api = client.CoreV1Api()
         apps_v1_api = client.AppsV1Api()
-    # Scale worker deployment to replicas
-    scale_function_deployment(1, apps_v1_api=apps_v1_api, deployment_name="emitter", namespace="openfaas-fn")
-    scale_function_deployment(replicas, apps_v1_api=apps_v1_api, deployment_name="worker", namespace="openfaas-fn")
-    wait_for_pods_ready(f"faas_function=worker", "openfaas-fn", core_v1_api, program_start_time, replicas)  # Wait for worker pods to be ready
 
-    scale_function_deployment(1, apps_v1_api=apps_v1_api, deployment_name="collector", namespace="openfaas-fn")
+    deploy_function(function_name="emitter", replicas=1, max_retries=3, delay=1)
+    deploy_function(function_name="collector", replicas=1, max_retries=3, delay=1)
+    deploy_function(function_name="worker", replicas=replicas, max_retries=3, delay=1)
+
     scale_function_deployment(replicas+2, apps_v1_api=apps_v1_api, deployment_name="queue-worker", namespace="openfaas")
     wait_for_pods_ready(f"app=queue-worker", "openfaas", core_v1_api, program_start_time, replicas+2)  # Wait for queue worker to stabilize
 
-    queue_worker_replicas = get_current_replicas(apps_v1_api=apps_v1_api, namespace="openfaas", deployment_name="queue-worker")
+    queue_worker_replicas = get_deployment_replicas(apps_v1_api=apps_v1_api, namespace="openfaas", name_or_prefix="queue-worker", exact_match=True)
     print(f"[INFO] Queue Worker Replicas for farm: {queue_worker_replicas}")
-
-    print(f"[INFO] Port-forwarding services at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
-    port_forward("openfaas", "gateway", 8080, 8080)
-    port_forward("redis", "redis-master", 6379, 6379)
 
     print(f"[INFO] Initializing Redis client at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
     redis_client = get_redis_client_with_retry()
@@ -447,22 +570,88 @@ def init_farm(program_start_time, configuration, replicas, payload, apps_v1_api=
 
     return redis_client
 
+def wait_for_deployment_ready(function_name, timeout=60):
+    cmd = [
+        "kubectl", "rollout", "status",
+        f"deployment/{function_name}",
+        "-n", "openfaas-fn",
+        f"--timeout={timeout}s"
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"[INFO] {function_name} deployment is ready.")
+    else:
+        print(f"[ERROR] Timeout waiting for {function_name}: {result.stderr}")
+
+def deploy_function(function_name, replicas, max_retries=3, delay=1):
+    """Deploys a function instance with the specified number of replicas."""
+    image = get_config().get(f"{function_name}_image")
+    print(f"[INFO] Deploying function '{function_name}' with {replicas} replicas using image '{image}'...")
+    for i in range(replicas):
+        function_instance_name = f"{function_name}-{i+1}"
+        deploy_function_instance(function_instance_name, image, max_retries, delay)
+        wait_for_deployment_ready(function_instance_name, timeout=60)
+
+def deploy_function_instance(function_name, image, max_retries=3, delay=1):
+    """
+    Deploys an OpenFaaS function using faas-cli with retry logic.
+    Detects rolling update status and waits before retrying.
+
+    Args:
+        function_name (str): Name of the function.
+        image (str): Docker image for the function.
+        max_retries (int): Maximum retry attempts.
+        delay (int): Delay (seconds) between attempts, with exponential backoff.
+    """
+    cmd = [
+        "deploy",
+        "--name", function_name,
+        "--image", image,
+        "--env", "read_timeout=12h",
+        "--env", "write_timeout=12h",
+        "--env", "exec_timeout=12h",
+        "--env", "redis_hostname=redis-master.redis.svc.cluster.local",
+        "--env", "redis_port=6379",
+        "--annotation", "com.openfaas.scale.min=1",
+        "--annotation", "com.openfaas.retry.attempts=0",
+        "--lang", "python3-http-skeleton"
+    ]
+
+    for attempt in range(1, max_retries + 1):
+        print(f"[INFO] Deploying function: {function_name} (Attempt {attempt}/{max_retries})")
+        try:
+            result = run_faas_cli(cmd, capture_output=True, check=True)
+            stdout = result.stdout.strip()
+            print(f"[INFO] Deployment stdout: {stdout.strip()}")
+
+            if f"Function {function_name} already exists, attempting rolling-update" in stdout:
+                print(f"[INFO] Detected rolling-update for {function_name}, waiting before retry...")
+                time.sleep(delay * attempt)  # Exponential wait
+                continue
+
+            print(f"[INFO][SUCCESS] Function '{function_name}' deployed successfully.")
+            return
+        except subprocess.CalledProcessError as e:
+            print(f"[WARNING] Attempt {attempt} failed to deploy {function_name}")
+            print(f"[WARNING] STDOUT: {e.stdout.strip()}")
+            print(f"[WARNING] STDERR: {e.stderr.strip()}")
+            if attempt == max_retries:
+                raise RuntimeError(f"[FAILURE] Failed to deploy {function_name} after {max_retries} attempts.")
+            time.sleep(delay)
+
+    raise RuntimeError(f"[FAILURE] Gave up deploying {function_name} after {max_retries} attempts.")
+
 def scale_deployments_to_zero_replica(program_start_time, apps_v1_api=None, core_v1_api=None):
     """
-    Scales down emitter, worker, collector deployments to zero replicas.
+    Scales down "queue-worker", "gateway", "nats" deployments to zero replicas.
     This is useful for resetting the environment.
     """
 
-    print(f"[INFO] Scaling down emitter, worker, collector deployments to 0 at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
+    print(f"[INFO] Scaling down queue-worker, gateway, nats deployments to 0 at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
 
-    for fn in ["queue-worker", "gateway", "nats", "prometheus"]:
+    for fn in ["queue-worker", "gateway", "nats"]:
         scale_function_deployment(0, apps_v1_api=apps_v1_api, deployment_name=fn, namespace="openfaas")
         print(f"[INFO] Scaled down {fn} deployment to 0 replicas.")
-
-
-    for fn in ["emitter", "worker", "collector"]:
-        scale_function_deployment(0, apps_v1_api=apps_v1_api, deployment_name=fn, namespace="openfaas-fn")
-        print(f"[INFO] Scaled down {fn} function deployment to 0 replicas.")
 
 def clear_all_queues(redis_client):
     """
@@ -474,6 +663,47 @@ def clear_all_queues(redis_client):
     clear_queues(redis_client, None)
     print("[INFO] Cleared all Redis queues.")
 
+def wait_for_function_pods_terminated(core_v1_api, namespace="openfaas-fn", attempts=60, delay=1):
+    """
+    Waits for all pods in the given namespace to terminate, using a fixed number of attempts.
+
+    Args:
+        core_v1_api (CoreV1Api): Kubernetes CoreV1Api client.
+        namespace (str): Namespace where functions are deployed.
+        attempts (int): Number of attempts before giving up.
+        delay (int): Delay (seconds) between attempts.
+    """
+    print("[INFO] Waiting for all function pods to be terminated...")
+
+    for attempt in range(attempts):
+        pods = core_v1_api.list_namespaced_pod(namespace=namespace).items
+        active_pods = [
+            p for p in pods
+            if p.status.phase not in ("Succeeded", "Failed") and not p.metadata.deletion_timestamp
+        ]
+
+        if not active_pods:
+            print(f"[INFO] All function pods terminated after {attempt + 1} attempt(s).")
+            return
+
+        print(f"[INFO] Attempt {attempt + 1}/{attempts}: {len(active_pods)} pod(s) ({[p.metadata.name for p in active_pods]}) still terminating...")
+        time.sleep(delay)
+
+    print("[WARNING] Some function pods are still running after max attempts.")
+
+def delete_all_functions(core_v1_api):
+    result = run_faas_cli(["list", "-q"], capture_output=True)
+    functions = result.stdout.strip().splitlines()
+    print(f"[INFO] Functions to delete: {functions}")
+
+    for fn in functions:
+        if fn:
+            print(f"[INFO] Removing function: {fn}")
+            run_faas_cli(["remove", fn])
+
+    # Wait for pod termination
+    wait_for_function_pods_terminated(core_v1_api)
+
 def restart_resources(program_start_time, core_v1_api, apps_v1_api):
     """
     Restarts "nats", "gateway", "queue-worker" deployments by scaling them down to 0 then scale up to 1 replica.
@@ -481,7 +711,7 @@ def restart_resources(program_start_time, core_v1_api, apps_v1_api):
     """
     print(f"[INFO] Restarting resources at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
 
-    # Scale down queue-worker, gateway, nats, prometheus, emitter, worker, collector deployments to 0 replicas
+    # Scale down queue-worker, gateway, nats deployments to 0 replicas
     scale_deployments_to_zero_replica(program_start_time, apps_v1_api=apps_v1_api, core_v1_api=core_v1_api)
 
     # Ensure no port-forward processes are running before starting new ones
@@ -545,7 +775,7 @@ def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('127.0.0.1', port)) == 0
 
-def port_forward(namespace, svc_name, local_port, remote_port, retries=6, delay=1):
+def port_forward(namespace, svc_name, local_port, remote_port, retries=10, delay=1):
     """
     Starts a kubectl port-forward to a service with retry logic.
     Args:
@@ -560,27 +790,31 @@ def port_forward(namespace, svc_name, local_port, remote_port, retries=6, delay=
     while attempt < retries:
         print(f"[INFO] Attempting port-forward for {svc_name} ({local_port} -> {remote_port}) in namespace '{namespace}' (Attempt {attempt+1}/{retries})")
         try:
-            proc = subprocess.Popen([
+            subprocess.Popen([
                 "kubectl", "port-forward", f"svc/{svc_name}",
                 f"{local_port}:{remote_port}", "-n", namespace
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-            # Wait a moment to ensure port-forward is established
-            time.sleep(3)
+            time.sleep(0.1)  # Give port-forward some time to establish
 
             if is_port_in_use(local_port):
-                print(f"[SUCCESS] Port-forward for {svc_name} is active on port {local_port}.")
+                print(f"[INFO] Port-forward for {svc_name} is active on port {local_port}.")
+
+                # Wait for the gateway to be ready if we're forwarding the OpenFaaS gateway
+                if svc_name == "gateway" and namespace == "openfaas":
+                    wait_for_gateway_ready(timeout=1)
+
                 return
             else:
                 print(f"[WARNING] Port-forward started but port {local_port} is not responding.")
 
         except Exception as e:
-            print(f"[ERROR] Port-forward failed on attempt {attempt+1}: {e}", file=sys.stderr)
+            print(f"[WARNING] Port-forward failed on attempt {attempt+1}: {e}", file=sys.stderr)
 
         attempt += 1
         time.sleep(delay)
 
-    print(f"[FAILURE] Could not establish port-forward for {svc_name} after {retries} attempts.", file=sys.stderr)
+    print(f"[ERROR] Could not establish port-forward for {svc_name} after {retries} attempts.", file=sys.stderr)
 
 def initialize_environment(program_start_time):
     """
@@ -599,6 +833,13 @@ def initialize_environment(program_start_time):
 
     print(f"[TIMER] Environment initialization started at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
     restart_resources(program_start_time, core_v1_api, apps_v1_api)
+
+    print(f"[INFO] Port-forwarding services at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
+    port_forward("openfaas", "gateway", 8080, 8080)
+    port_forward("redis", "redis-master", 6379, 6379)
+
+    print(f"[INFO] Deleted all functions.")
+    delete_all_functions(core_v1_api)
     print(f"[TIMER] Environment initialization completed at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
 
     return get_config()
@@ -612,23 +853,30 @@ def run_script(script_name, args=[]):
         args (list): List of arguments to pass to the script.
     """
     cmd = ["python", script_name] + [str(arg) for arg in args]
-    print(f"[ASYNC RUNNING] {' '.join(cmd)}")
+    print(f"[INFO] [ASYNC RUNNING] {' '.join(cmd)}")
     subprocess.Popen(cmd)
 
-def monitor_worker_replicas(apps_v1_api=None):
+def monitor_deployment_replicas(apps_v1_api=None, namespace="openfaas-fn", name_or_prefix="worker-", exact_match=False):
     """
-    Monitors the current number of worker replicas.
+    Logs the total replicas for a given deployment name or prefix.
+
+    Args:
+        name_or_prefix (str): Full name (e.g., "queue-worker") or prefix (e.g., "worker-")
+        exact_match (bool): If True, do exact match instead of prefix match
     """
     try:
-        replicas = get_current_replicas(apps_v1_api=apps_v1_api, namespace="openfaas-fn", deployment_name="worker")
-        print(f"\n[WORKER STATUS]")
-        print(f"  Current worker replicas: {replicas}")
+        replicas = get_deployment_replicas(
+            apps_v1_api=apps_v1_api,
+            namespace=namespace,
+            name_or_prefix=name_or_prefix,
+            exact_match=exact_match
+        )
+        print(f"[INFO] {replicas} replica(s) for '{name_or_prefix}' (exact_match={exact_match})")
         return replicas
     except Exception as e:
-        print(f"[WARNING] Could not retrieve worker replicas: {e}")
+        print(f"[WARNING] Could not retrieve {name_or_prefix} replicas: {e}")
 
-
-def wait_for_pods_ready(label_selector, namespace, core_v1_api, program_start_time, expected_count=1, timeout=120):
+def wait_for_pods_ready(label_selector, namespace, core_v1_api, program_start_time, expected_count=1, timeout=60):
     """
     Wait until the expected number of pods with the given label are Running and Ready,
     and ensure that no pod remains in a non-Running state.

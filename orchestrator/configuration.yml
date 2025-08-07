@@ -11,6 +11,9 @@ collector_control_syn_queue_name: collector_control_syn_queue
 emitter_start_queue_name: emitter_start_queue
 worker_start_queue_name: worker_start_queue
 collector_start_queue_name: collector_start_queue
+emitter_image: lilanpei/emitter:latest
+worker_image: lilanpei/worker:latest
+collector_image: lilanpei/collector:latest
 wait_time: 0.1
 processing_delay: 2
 deadline_coeff: 2.5e-7
@@ -30,3 +33,4 @@ log_tags:
   - "[TIMER]"
   - "[ERROR]"
   - "[WARNING]"
+  # - "[DEBUG]"

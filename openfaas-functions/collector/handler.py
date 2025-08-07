@@ -85,7 +85,7 @@ def handle(event, context):
             print(f"ERROR: Unexpected error: {e}", file=sys.stderr)
             break
 
-    print(f"[Collector] Collector processed {num_results} results.")
+    print(f"[INFO] Collector processed {num_results} results.")
 
     return {
         "statusCode": 200,

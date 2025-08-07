@@ -25,7 +25,6 @@ for WINDOW in "${WINDOW_DURATION_LIST[@]}"; do
       else
         echo "[SUCCESS] Completed run $i for workers=${WORKERS}"
       fi
-      sleep 20 # Sleep to avoid overwhelming the system
     done
   done
 done

@@ -176,7 +176,7 @@ def main():
     # simulate multiple runs (num_cycles cycles of window_duration seconds each)
     print(f"[INFO] Starting task generation across {num_tasks} tasks over {num_cycles} cycles of {window_duration} seconds each.")
     for cycle in range(num_cycles):
-        print(f"\n[CYCLE {cycle+1}] Generating {num_tasks} tasks over {window_duration}s...")
+        print(f"\n[INFO] [CYCLE {cycle+1}] Generating {num_tasks} tasks over {window_duration}s...")
         task_producer(num_tasks, redis_client, configuration.get('input_queue_name'), program_start_time, deadline_coeff, deadline_cap, deadline_floor, window_duration=window_duration)
 
     task_generation_end_time = (get_utc_now() - program_start_time).total_seconds()

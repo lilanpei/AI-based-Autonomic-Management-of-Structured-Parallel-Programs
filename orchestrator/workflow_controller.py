@@ -12,7 +12,7 @@ from utilities import (
     get_redis_client_with_retry,
     initialize_environment,
     run_script,
-    monitor_worker_replicas,
+    monitor_deployment_replicas,
     async_function,
     send_control_messages,
     get_utc_now
@@ -33,10 +33,10 @@ def analyze_output_queue(redis_client, total_tasks):
     results = redis_client.lrange("output_queue", 0, -1)
     total_results = len(results)
 
-    print(f"\n[PROGRESS] {total_results}/{total_tasks} tasks completed ({(total_results / total_tasks):.2%})")
+    print(f"\n[INFO] {total_results}/{total_tasks} tasks completed ({(total_results / total_tasks):.2%})")
 
     if total_results == 0:
-        print("\n[OUTPUT QUEUE ANALYSIS] No results to analyze.")
+        print("\n[INFO] [OUTPUT QUEUE ANALYSIS] No results to analyze.")
         return total_results
 
     qos_exceed_count = 0
@@ -122,12 +122,12 @@ def monitor_queues(program_start_time, interval=3, total_tasks=1000, feedback_en
     while True:
         now = (get_utc_now() - program_start_time).total_seconds()
         print(f"[INFO]------------- Monitoring window at [{now:.4f}] seconds -------------")
-        print("\n[QUEUE STATUS]")
+        print("\n[INFO] [QUEUE STATUS]")
         for queue in QUEUE_NAMES:
             length = redis_client.llen(queue)
             print(f"[INFO]  {queue}: {length} items")
 
-        replicas = monitor_worker_replicas(apps_v1_api=apps_v1_api)
+        replicas = monitor_deployment_replicas(apps_v1_api=apps_v1_api, namespace="openfaas-fn", name_or_prefix="worker-", exact_match=False)
         analyze_output_queue(redis_client, total_tasks)
         results = redis_client.lrange("output_queue", 0, -1)
         total_results = len(results)
@@ -136,13 +136,13 @@ def monitor_queues(program_start_time, interval=3, total_tasks=1000, feedback_en
 
             end_time = (get_utc_now() - program_start_time).total_seconds()
             print(f"\n[TIMER] Program/Monitoring completed at [{end_time:.4f}] seconds.")
-            # for index, raw in enumerate(results):
-            #     result = json.loads(raw)
-            #     print(f"[DEBUG] Result {index} (task_id: {result.get("task_id")}):")
-            #     print(f"[DEBUG]  Emit Time    : {result.get("task_emit_time"):.4f} sec")
-            #     print(f"[DEBUG]  Collect Time : {result.get("task_collect_time"):.4f} sec")
-            #     print(f"[DEBUG]  Compute Time : {result.get("task_work_time"):.4f} sec")
-            #     print(f"[DEBUG] result: {result}")
+            for index, raw in enumerate(results):
+                result = json.loads(raw)
+                print(f"[DEBUG] Result {index} (task_id: {result.get("task_id")}):")
+                print(f"[DEBUG]  Emit Time    : {result.get("task_emit_time"):.4f} sec")
+                print(f"[DEBUG]  Collect Time : {result.get("task_collect_time"):.4f} sec")
+                print(f"[DEBUG]  Compute Time : {result.get("task_work_time"):.4f} sec")
+                print(f"[DEBUG] result: {result}")
 
             print(f"\n[INFO] All {total_tasks} tasks completed at {end_time:.4f} seconds.")
             print(f"[TIMER] Total monitoring time: [{(end_time - monitoring_start_time):.4f}] seconds.")

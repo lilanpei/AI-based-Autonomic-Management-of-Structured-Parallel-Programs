@@ -7,7 +7,7 @@ from kubernetes import client, config
 from utilities import (
     get_config,
     scale_function_deployment,
-    get_current_replicas,
+    get_deployment_replicas,
     send_control_messages,
     delete_pod_by_name,
     safe_invoke_function_async,
@@ -101,7 +101,7 @@ def scale_down(program_start_time, current, delta, configuration, redis_client, 
             time.sleep(timeout)
             if attempts >= retries:
                 print("[WARNING] No ACKs received for a long time, exiting scale down.")
-                print(f"[INFO] Current worker replicas: {get_current_replicas(apps_v1_api, namespace='openfaas-fn', deployment_name='worker')}")
+                print(f"[INFO] Current worker replicas: {get_deployment_replicas(apps_v1_api, namespace='openfaas-fn', name_or_prefix='worker-', exact_match=False)}")
                 sys.exit(0)
             continue
 
@@ -132,7 +132,7 @@ def scale_down(program_start_time, current, delta, configuration, redis_client, 
             print(f"[ERROR] Pod '{pod}' was not deleted as expected!")
     for pod in remaining_pods:
         if pod not in acked_pods:
-            print(f"[OK] Pod '{pod}' preserved.")
+            print(f"[INFO] [OK] Pod '{pod}' preserved.")
     return new_replicas
 
 def main():
@@ -185,7 +185,7 @@ def main():
         "collector_feedback_flag": feedback_flag
     }
 
-    current_replicas = get_current_replicas(apps_v1_api, namespace="openfaas-fn", deployment_name="worker")
+    current_replicas = get_deployment_replicas(apps_v1_api, namespace="openfaas-fn", name_or_prefix="worker-", exact_match=False)
     print(f"[INFO] Current replicas: {current_replicas}")
 
     if delta > 0:
@@ -199,8 +199,8 @@ def main():
 
     print(f"[TIMER] Finalizing scaling at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
     time.sleep(2)
-    current_worker_replicas = get_current_replicas(apps_v1_api, namespace="openfaas-fn", deployment_name="worker")
-    current_queue_worker_replicas = get_current_replicas(apps_v1_api, namespace="openfaas", deployment_name="queue-worker")
+    current_worker_replicas = get_deployment_replicas(apps_v1_api, namespace="openfaas-fn", name_or_prefix="worker-", exact_match=False)
+    current_queue_worker_replicas = get_deployment_replicas(apps_v1_api, namespace="openfaas", name_or_prefix="queue-worker", exact_match=True)
     print(f"[INFO] Current Worker Replicas: {current_worker_replicas}, Queue Worker Replicas: {current_queue_worker_replicas}")
 
 
