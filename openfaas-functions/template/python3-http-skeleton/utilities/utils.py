@@ -101,6 +101,35 @@ def deadline_for_matrix(n: int, coeff: float, cap: int, floor: int) -> int:
     """
     return int(min(max(floor, coeff * n**3), cap))
 
+def calculate_qos_level(actual_time, deadline):
+    """
+    Calculate QoS level based on completion time vs deadline
+
+    Args:
+        actual_time: Actual completion time (seconds)
+        deadline: Task deadline (seconds)
+
+    Returns:
+        tuple: (qos_level, qos_score)
+            qos_level: "excellent", "good", "acceptable", "poor", "violated"
+            qos_score: 0.0 to 1.0
+    """
+    if deadline <= 0:
+        return "acceptable", 0.7
+
+    ratio = actual_time / deadline
+
+    if ratio <= 0.5:
+        return "excellent", 1.0      # Completed in < 50% of deadline
+    elif ratio <= 0.75:
+        return "good", 0.9           # Completed in 50-75% of deadline
+    elif ratio <= 1.0:
+        return "acceptable", 0.7     # Completed within deadline
+    elif ratio <= 1.25:
+        return "poor", 0.3           # Slightly exceeded deadline (0-25% over)
+    else:
+        return "violated", 0.0       # Significantly exceeded deadline (>25% over)
+
 def extract_result(raw_result, program_start_time):
     try:
         result = json.loads(raw_result)
@@ -111,13 +140,27 @@ def extract_result(raw_result, program_start_time):
         if not all(k in result for k in required_keys):
             raise ValueError("Result missing required keys")
 
+        # Extract timestamps
         deadline = result.get("task_deadline")
         work_ts = result.get("task_work_timestamp")
         gen_ts = result.get("task_gen_timestamp")
+        priority = result.get("task_priority", "normal")
         task_id = result.get("task_id")
         print(f"[INFO] Extracted result for task {task_id}")
         now = (get_utc_now() - program_start_time).total_seconds()
         deadline_met = (now - gen_ts) <= deadline
+
+        # Calculate current time
+        now = (datetime.now(timezone.utc) - program_start_time).total_seconds()
+
+        # Calculate actual completion time (from generation to now)
+        actual_time = now - gen_ts
+
+        # Calculate QoS level and score
+        qos_level, qos_score = calculate_qos_level(actual_time, deadline)
+
+        # Backward compatibility: binary QoS (acceptable or better)
+        deadline_met = qos_score >= 0.7
 
         return {
             "task_id": task_id,
@@ -175,7 +218,8 @@ def extract_task(raw_task, program_start_time):
             "task_emit_time":  now - task.get('task_gen_timestamp'),
         }
     except (json.JSONDecodeError, ValueError) as e:
-        raise ValueError(f"ERROR: Malformed task: {e} - Raw: {raw_task[:256]}", file=sys.stderr)
+        print(f"ERROR: Malformed task: {e} - Raw: {raw_task[:256]}", file=sys.stderr)
+        raise ValueError(f"ERROR: Malformed task: {e}")
 
 def prepare_matrices(task):
     task_data, task_size = task.get("task_data"), task.get("task_data_size")

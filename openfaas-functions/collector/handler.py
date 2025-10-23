@@ -69,9 +69,13 @@ def handle(event, context):
                 continue
             else:
                 print(f"\n[TIMER] got result at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
-                # Fetch and parse results
+                # Fetch and parse results with QoS calculation
                 result = extract_result(raw_result, program_start_time)
                 num_results += 1
+
+                # Log QoS information
+                print(f"[INFO] Task {result['task_id']}: {result['task_qos_level']} (score={result['task_qos_score']:.2f}, ratio={result['task_completion_ratio']:.2f})")
+
                 safe_redis_call(lambda: redis_client.lpush(output_q, json.dumps(result)))
 
                 # Feedback task generation
