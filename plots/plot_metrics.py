@@ -107,7 +107,7 @@ plt.savefig(f"{plot_output_dir}/scatter_metrics.png", dpi=600)
 fig2, ax2 = plt.subplots(figsize=(10, 6))
 for idx, (label, data) in enumerate(timing_data.items()):
     means = [np.mean(data[w]) for w in workers]
-    stds = [np.std(data[w]) for w in workers]
+    stds = [np.std(data[w], ddof=1) for w in workers]
     ax2.errorbar(workers, means, yerr=stds, label=label, fmt='o-', capsize=3)
 ax2.set_xscale("log", base=2)
 ax2.set_xticks(workers)
@@ -189,7 +189,7 @@ axes = ax5.flatten()
 for idx, label in enumerate(plot_keys):
     data = timing_data[label]
     means = [np.mean(data[w]) for w in workers]
-    stds = [np.std(data[w]) for w in workers]
+    stds = [np.std(data[w], ddof=1) for w in workers]
     ax = axes[idx]
     ax.errorbar(workers, means, yerr=stds, label=label, fmt='o-', color=colors[idx % len(colors)], capsize=3)
     ax.set_xscale("log", base=2)
@@ -225,7 +225,7 @@ ax1.legend()
 
 # ERROR BAR PLOT: mean ± std
 qos_means = [np.mean(qos_exceed_data[w]) for w in workers]
-qos_stds = [np.std(qos_exceed_data[w]) for w in workers]
+qos_stds = [np.std(qos_exceed_data[w], ddof=1) for w in workers]
 
 ax2.errorbar(workers, qos_means, yerr=qos_stds, fmt='o-', capsize=4, color='tab:red', label="QoS Exceed (Mean ± Std)")
 ax2.set_xscale("log", base=2)

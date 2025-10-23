@@ -11,7 +11,6 @@ from utils import (
     send_start_signal,
     get_utc_now,
     extract_result,
-    feedback_task_generation
 )
 
 def handle(event, context):
@@ -22,11 +21,9 @@ def handle(event, context):
     if not body:
         return {"statusCode": 400, "body": "Invalid JSON in request body."}
 
-    result_q, output_q = body.get('result_queue_name'), body.get("output_queue_name")
-    input_q, feedback_flag = body.get('input_queue_name'), body.get("collector_feedback_flag")
+    input_q, result_q, output_q = body.get('input_queue_name'), body.get('result_queue_name'), body.get("output_queue_name")
     control_syn_q, start_q = body.get('collector_control_syn_queue_name'), body.get('collector_start_queue_name')
     wait_time, program_start_time_str = body.get("wait_time"), body.get("program_start_time")
-    deadline_coeff, deadline_cap, deadline_floor = body.get("deadline_coeff"), body.get("deadline_cap"), body.get("deadline_floor")
 
     if program_start_time_str:
         program_start_time = datetime.fromisoformat(program_start_time_str)
@@ -34,7 +31,7 @@ def handle(event, context):
         print("[ERROR] START_TIMESTAMP environment variable not set.", file=sys.stderr)
         sys.exit(1)
 
-    if not all([input_q, result_q, output_q, start_q, wait_time, program_start_time, feedback_flag is not None]):
+    if not all([input_q, result_q, output_q, start_q, wait_time, program_start_time]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
     print(f"\n[TIMER] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
@@ -74,14 +71,9 @@ def handle(event, context):
                 num_results += 1
 
                 # Log QoS information
-                print(f"[INFO] Task {result['task_id']}: {result['task_qos_level']} (score={result['task_qos_score']:.2f}, ratio={result['task_completion_ratio']:.2f})")
+                print(f"[INFO] Task {result['task_id']}: {result['task_QoS']}")
 
                 safe_redis_call(lambda: redis_client.lpush(output_q, json.dumps(result)))
-
-                # Feedback task generation
-                if feedback_flag and input_q:
-                    print(f"[INFO] Feedback : Generating task from result {result['task_id']}")
-                    feedback_task_generation(result, redis_client, input_q, program_start_time, deadline_coeff, deadline_cap, deadline_floor)
 
                 print(f"[TIMER] Processed {num_results} results at {(get_utc_now() - program_start_time).total_seconds():.4f} from '{result_q}' to '{output_q}' on pod {pod_name}")
 

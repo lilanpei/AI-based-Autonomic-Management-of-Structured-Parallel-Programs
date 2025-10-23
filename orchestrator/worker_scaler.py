@@ -5,7 +5,13 @@ import time
 import subprocess
 from datetime import datetime
 from kubernetes import client, config
-from utilities import (
+
+# Add the project root to sys.path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+sys.path.append(project_root)
+
+from utilities.utilities import (
     get_config,
     scale_function_deployment,
     get_deployment_replicas,
@@ -24,25 +30,19 @@ def parse_args():
     """
     Parses and validates CLI arguments.
     """
-    if len(sys.argv) == 2:
+    if len(sys.argv) == 1:
         delta_str = sys.argv[1]
-        feedback_flag = False
-        print(f"[INFO] No feedback flag provided, defaulting to {feedback_flag}.")
-    elif len(sys.argv) == 3:
-        delta_str = sys.argv[1]
-        feedback_flag = sys.argv[2].lower() == "true"
-        print(f"[INFO] Feedback flag set to {feedback_flag}.")
     else:
-        print("[ERROR] Invalid number of arguments. Expected 1 or 2 arguments.")
-        print("Usage: python worker_scaler.py <scale_delta> [<feedback_enabled>]")
-        print("Example: python worker_scaler.py +1 True")
+        print("[ERROR] Invalid number of arguments. Expected 1 argument.")
+        print("Usage: python worker_scaler.py <scale_delta>")
+        print("Example: python worker_scaler.py +1")
         sys.exit(1)
 
     if delta_str not in VALID_DELTAS:
         print("ERROR: scale_delta must be one of +2, +1, 0, -1, -2")
         sys.exit(1)
 
-    return int(delta_str), feedback_flag
+    return int(delta_str)
 
 
 def scale_up(program_start_time, current, delta, configuration, redis_client, payload, function_invoke_timeout, function_invoke_retries, apps_v1_api=None):
@@ -189,7 +189,7 @@ def main():
         print("[ERROR] Workflow init not completed. Exiting.")
         sys.exit(0)
 
-    delta, feedback_flag = parse_args()
+    delta = parse_args()
     configuration = get_config()
     init_msg = json.loads(redis_client.lindex(queue, -1))
     program_start_time = datetime.fromisoformat(init_msg["program_start_time"])
@@ -231,11 +231,7 @@ def main():
         "collector_start_queue_name": configuration.get("collector_start_queue_name"),
         "processing_delay": configuration.get("processing_delay"),
         "wait_time": configuration.get("wait_time"),
-        "deadline_coeff": configuration.get("deadline_coeff"),
-        "deadline_cap": configuration.get("deadline_cap"),
-        "deadline_floor": configuration.get("deadline_floor"),
         "program_start_time": str(program_start_time),
-        "collector_feedback_flag": feedback_flag
     }
 
     current_replicas = get_deployment_replicas(apps_v1_api, namespace="openfaas-fn", name_or_prefix="worker-", exact_match=False)

@@ -14,6 +14,7 @@ from threading import Thread
 from datetime import datetime, timezone
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+from utilities.logger import get_logger
 
 # Module-level cache for configuration
 _config = None
@@ -47,35 +48,94 @@ def get_utc_now():
 
 def init_redis_client():
     """
-    Initialize Redis client using environment or fallback config.
+    Initialize Redis client with enhanced security and configuration support.
     """
-    configuration = get_config().get('redis', {})
-    host = os.getenv('REDIS_HOSTNAME', configuration.get('hostname', 'localhost'))
-    port = int(os.getenv('REDIS_PORT', configuration.get('port', 6379)))
+    logger = get_logger()
+    configuration = get_config()
+
+    # Get Redis configuration with environment variable support
+    host = os.getenv('REDIS_HOSTNAME', configuration.get('redis_hostname', 'localhost'))
+    port = int(os.getenv('REDIS_PORT', configuration.get('redis_port', 6379)))
+    password = os.getenv('REDIS_PASSWORD')
+    ssl_enabled = os.getenv('REDIS_SSL', 'false').lower() == 'true'
+
+    redis_config = {
+        'host': host,
+        'port': port,
+        'decode_responses': True,
+        'socket_timeout': 5,
+        'socket_connect_timeout': 5,
+        'retry_on_timeout': True
+    }
+
+    if password:
+        redis_config['password'] = password
+        logger.info("Redis authentication enabled")
+
+    if ssl_enabled:
+        redis_config['ssl'] = True
+        redis_config['ssl_cert_reqs'] = None
+        logger.info("Redis SSL enabled")
 
     try:
-        return redis.Redis(host=host, port=port, decode_responses=True)
-    except redis.exceptions.RedisError as e:
-        print(f"[ERROR] Redis initialization failed: {e}", file=sys.stderr)
-        sys.exit(1)
+        client = redis.Redis(**redis_config)
+        # Test connection
+        client.ping()
+        logger.info("Redis client initialized successfully", host=host, port=port, ssl=ssl_enabled)
+        return client
+    except redis.ConnectionError as e:
+        logger.error("Redis connection failed", error=str(e), host=host, port=port)
+        raise
+    except redis.AuthenticationError as e:
+        logger.error("Redis authentication failed", error=str(e))
+        raise
+    except redis.TimeoutError as e:
+        logger.error("Redis connection timeout", error=str(e))
+        raise
+    except redis.RedisError as e:
+        logger.error("Redis error occurred", error=str(e))
+        raise
+    except Exception as e:
+        logger.error("Unexpected error during Redis initialization", error=str(e))
+        raise
 
-def get_redis_client_with_retry(retries=2, delay=1):
+def get_redis_client_with_retry(retries=3, delay=2):
     """
-    Attempts to connect to Redis with retry logic.
+    Attempts to connect to Redis with enhanced retry logic and exponential backoff.
     """
+    logger = get_logger()
+
     for attempt in range(retries):
         try:
             redis_client = init_redis_client()
-            redis_client.ping()  # Test connection
-            print("[INFO] Redis client initialized.")
+            logger.info("Redis client connection established", attempt=attempt + 1)
             return redis_client
+        except redis.ConnectionError as e:
+            logger.warning("Redis connection failed",
+                         attempt=attempt + 1,
+                         max_retries=retries,
+                         error=str(e))
+            if attempt < retries - 1:
+                backoff_delay = delay * (2 ** attempt)  # Exponential backoff
+                logger.info(f"Retrying in {backoff_delay} seconds...")
+                time.sleep(backoff_delay)
+
+                # Check if port forwarding is needed
+                port = int(os.getenv('REDIS_PORT', 6379))
+                if not is_port_in_use(port):
+                    logger.info("Port not in use, attempting port-forward", port=port)
+                    try:
+                        port_forward("redis", "redis-master", port, port)
+                    except Exception as pf_error:
+                        logger.warning("Port forward failed", error=str(pf_error))
         except Exception as e:
-            print(f"[ERROR] Redis connection failed (Attempt {attempt + 1}/{retries}): {e}")
-            time.sleep(delay)
-            if not is_port_in_use(6379):
-                print("[INFO] Port 6379 is not in use, attempting to port-forward...")
-                port_forward("redis", "redis-master", 6379, 6379)
-    print("[FATAL] Could not connect to Redis after multiple attempts.")
+            logger.error("Unexpected error during Redis connection",
+                        attempt=attempt + 1,
+                        error=str(e))
+            if attempt < retries - 1:
+                time.sleep(delay)
+
+    logger.error("Could not connect to Redis after multiple attempts", retries=retries)
     sys.exit(1)
 
 def generate_matrix(size):
@@ -491,55 +551,6 @@ def get_function_pod_names(function_name, core_v1_api=None, namespace="openfaas-
     pods = core_v1_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
     return [pod.metadata.name for pod in pods.items]
 
-def init_pipeline(program_start_time, configuration, payload, apps_v1_api=None, core_v1_api=None):
-    """
-    Initialize the pipeline by clearing queues and scaling deployments.
-    """
-    print(f"[TIMER] Pipeline initialization started at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
-    if not apps_v1_api:
-        try:
-            config.load_incluster_config()
-        except:
-            try:
-                config.load_kube_config()
-            except Exception as e:
-                print(f"[ERROR] Kubernetes config load failed: {e}", file=sys.stderr)
-                sys.exit(1)
-        apps_v1_api = client.AppsV1Api()
-
-    deployed_emitter_names = deploy_function(function_name_prefix="emitter", replicas=1, max_retries=3, delay=1)
-    deployed_collector_names = deploy_function(function_name_prefix="collector", replicas=1, max_retries=3, delay=1)
-    deployed_worker_names = deploy_function(function_name_prefix="worker", replicas=1, max_retries=3, delay=1)
-
-    scale_function_deployment(3, apps_v1_api=apps_v1_api, deployment_name="queue-worker", namespace="openfaas")
-    wait_for_pods_ready(f"app=queue-worker", "openfaas", core_v1_api, program_start_time, 3) # Wait for queue worker to stabilize
-
-    queue_worker_replicas = get_deployment_replicas(apps_v1_api=apps_v1_api, namespace="openfaas", name_or_prefix="queue-worker", exact_match=True)
-    print(f"[INFO] Queue Worker Replicas for pipeline: {queue_worker_replicas}")
-
-    print(f"[INFO] Initializing Redis client at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
-    redis_client = get_redis_client_with_retry()
-
-    print(f"[INFO] Clearing all queues at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
-    clear_queues(redis_client, None)
-
-    print(f"[INFO] Invoking functions at {(get_utc_now() - program_start_time).total_seconds():.4f}...")
-    safe_invoke_function_async(deployed_emitter_names, payload, redis_client, configuration.get("emitter_start_queue_name"), replicas=1, timeout=configuration.get("first_function_invoke_timeout"), retries=configuration.get("first_function_invoke_retries"))
-    safe_invoke_function_async(deployed_worker_names, payload, redis_client, configuration.get("worker_start_queue_name"), replicas=1, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
-    safe_invoke_function_async(deployed_collector_names, payload, redis_client, configuration.get("collector_start_queue_name"), replicas=1, timeout=configuration.get("function_invoke_timeout"), retries=configuration.get("function_invoke_retries"))
-    print(f"[TIMER] Pipeline initialization completed at [{(get_utc_now() - program_start_time).total_seconds():.4f}] seconds.")
-
-    # Send workflow init completed messages
-    message = {
-        "type": "WORKFLOW_INIT",
-        "action": "SYN",
-        "message": "Workflow initialization completed",
-        "SYN_timestamp": (get_utc_now() - program_start_time).total_seconds(),
-        "program_start_time": str(program_start_time)
-    }
-    send_control_messages(message, redis_client, configuration.get("workflow_init_syn_queue_name"), 1)
-
-    return redis_client
 
 def init_farm(program_start_time, configuration, replicas, payload, apps_v1_api=None, core_v1_api=None):
     """
