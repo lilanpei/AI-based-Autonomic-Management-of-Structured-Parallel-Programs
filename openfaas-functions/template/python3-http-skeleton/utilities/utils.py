@@ -300,7 +300,7 @@ def generate_task_for_generation(program_start_time, calibrated_model_a=None, ca
         weights=task_config["size_weights"]
     )[0]
 
-    # Get expected duration from calibration data
+    # Get expected duration from calibration data (predefined values)
     duration_map = {
         512: task_config["duration_512"],
         1024: task_config["duration_1024"],
@@ -308,9 +308,6 @@ def generate_task_for_generation(program_start_time, calibrated_model_a=None, ca
         4096: task_config["duration_4096"]
     }
     expected_duration = duration_map[image_size] / 1000  # Convert to seconds
-
-    # Calculate deadline using QoS model
-    deadline = calculate_task_deadline(expected_duration)
 
     # Get current UTC time
     task_gen_timestamp = (get_utc_now() - program_start_time).total_seconds()
@@ -321,12 +318,19 @@ def generate_task_for_generation(program_start_time, calibrated_model_a=None, ca
         processing_time_simulated = calibrated_model_a * (image_size ** 2) + calibrated_model_b
         # Ensure non-negative
         processing_time_simulated = max(0.001, processing_time_simulated)  # Minimum 1ms
+
+        # Use calibrated model for deadline calculation (more accurate)
+        deadline_base = processing_time_simulated
         print(f"[DEBUG] Calibrated model: size={image_size}, time={processing_time_simulated:.3f}s")
     else:
         # Fallback: use expected duration
         processing_time_simulated = expected_duration
+        deadline_base = expected_duration
         print(f"[DEBUG] Expected duration: size={image_size}, time={processing_time_simulated:.3f}s")
     
+    # Calculate deadline using QoS model (based on calibrated or expected duration)
+    deadline = calculate_task_deadline(deadline_base)
+
     # Final validation: ensure processing time is positive
     processing_time_simulated = max(0.001, processing_time_simulated)
 
