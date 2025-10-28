@@ -34,18 +34,19 @@ def test_single_agent(agent_name, agent, env, num_steps=20):
     Test a single reactive baseline agent
 
     Args:
-        agent_name: Name of the agent
+        agent_name: Name of the agent (for logging)
         agent: Agent instance
         env: Environment instance
         num_steps: Number of steps to run
     """
-    print(f"\n{'='*70}")
+    print("\n" + "="*70)
     print(f"TESTING {agent_name.upper()}")
-    print(f"{'='*70}")
+    print("="*70)
 
     # Reset environment
     print("\n[1/3] Resetting environment...")
     state = env.reset()
+
     print(f"✓ Initial state: {state}")
 
     # Track statistics
@@ -399,7 +400,7 @@ def main():
     parser.add_argument('--max-workers', type=int, default=32,
                         help='Maximum number of workers')
     parser.add_argument('--step-duration', type=int, default=20,
-                        help='Total step duration in seconds (includes scaling ~10s + observation ~10s)')
+                        help='Total step duration in seconds (includes scaling 10~17s)')
 
     args = parser.parse_args()
 

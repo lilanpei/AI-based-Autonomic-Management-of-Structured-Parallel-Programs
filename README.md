@@ -19,7 +19,7 @@ This project implements an **RL-based autoscaling system** for serverless parall
 
 1. **OpenFaaS Functions**: Emitter, Worker (scalable), Collector
 2. **Autoscaling Environment**: Gym-compatible RL environment
-3. **RL Agents**: PPO, Q-Learning, SARSA
+3. **RL Agents**: SARSA
 4. **Baseline Policies**: ReactiveAverage, ReactiveMaximum
 5. **Orchestrator**: Workflow management and monitoring
 
@@ -39,14 +39,14 @@ AI-based-Autonomic-Management-of-Structured-Parallel-Programs/
 ├── autoscaling_env/          # RL environment and agents
 │   ├── openfaas_autoscaling_env.py  # Gym environment
 │   ├── baselines/            # Reactive baseline policies
-│   │   ├── reactive_policies.py
-│   │   └── reactive_baseline.py
+│   │   ├── reactive_policies.py  # ReactiveAverage, ReactiveMaximum
+│   │   └── README.md
 │   ├── rl/                   # RL agent implementations
-│   │   ├── ppo_agent.py      # PPO (deep RL)
-│   │   ├── tabular_agents.py # Q-Learning, SARSA
-│   │   ├── train_ppo.py      # Training script
-│   │   └── train_all_agents.py
-│   └── test_reactive_baselines.py
+│   │   ├── sarsa_agent.py    # SARSA
+│   │   ├── train_sarsa.py    # Training script
+│   │   ├── test_sarsa.py     # Evaluation script
+│   │   └── README.md
+│   └── test_reactive_baselines.py  # Baseline testing
 │
 ├── orchestrator/             # Workflow management
 │   ├── workflow_controller.py  # Deploy and monitor workflow
@@ -68,16 +68,20 @@ AI-based-Autonomic-Management-of-Structured-Parallel-Programs/
                                        ↑            ↓
                                        └─ RL Agent ─┘
                                         (Scale 1-32)
+
+RL Agent observes: [input_q, worker_q, result_q, output_q, workers,
+                    avg_time, max_time, arrival_rate, qos_rate]
 ```
 
 ### **RL Training Loop**
 
 ```
-1. Observe: [queue_length, workers, avg_time, arrival_rate, qos_rate]
-2. Decide: RL agent selects action {-2, -1, 0, +1, +2}
+1. Observe: 9D state [input_q, worker_q, result_q, output_q, workers,
+                      avg_time, max_time, arrival_rate, qos_rate]
+2. Decide: SARSA agent selects action {-2, -1, 0, +1, +2}
 3. Act: Scale workers up/down via Kubernetes API
-4. Reward: Based on QoS, queue length, worker cost
-5. Learn: Update policy (PPO, Q-Learning, SARSA)
+4. Reward: Based on QoS, queue length, worker cost, scaling penalty
+5. Learn: Update Q-table using SARSA (on-policy TD control)
 ```
 
 ---
@@ -102,27 +106,20 @@ faas-cli up -f stack.yaml
 
 ```bash
 cd autoscaling_env
-python test_reactive_baselines.py --agent both --steps 25
+python test_reactive_baselines.py --agent both --max-steps 30 --step-duration 20
 ```
 
-### **3. Train RL Agent**
+### **3. Train SARSA Agent**
 
 ```bash
-./start_training.sh 10 50 5
-# 10 episodes, 50 steps/episode, save every 5 episodes
+cd autoscaling_env/rl
+python train_sarsa.py --episodes 50 --max-steps 30 --step-duration 20
 ```
 
 ### **4. Evaluate Trained Model**
 
 ```bash
-cd rl
-python train_ppo.py --mode eval --model models/ppo_final.pt --episodes 3
-```
-
-### **5. Compare with Baselines**
-
-```bash
-python train_ppo.py --mode compare --model models/ppo_final.pt --episodes 3
+python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
 ```
 
 ---
@@ -144,15 +141,16 @@ python train_ppo.py --mode compare --model models/ppo_final.pt --episodes 3
 
 **Gym-compatible interface** for training autoscaling policies:
 
-- **Observation**: 5D vector (queue, workers, time, rate, QoS)
+- **Observation**: 9D vector [input_q, worker_q, result_q, output_q, workers, avg_time, max_time, arrival_rate, qos_rate]
 - **Action**: 5 discrete actions (-2, -1, 0, +1, +2 workers)
-- **Reward**: Multi-objective (QoS, efficiency, stability)
+- **Reward**: Multi-objective (QoS reward, queue penalty, worker cost, scaling penalty)
+- **Episode Termination**: Task-driven (ends when all tasks complete or max steps reached)
 
-### **3. Multiple RL Algorithms**
+### **3. SARSA**
 
-- **PPO**: Deep RL, best performance (95% QoS)
-- **Q-Learning**: Tabular RL, simple and fast
-- **SARSA**: On-policy, conservative exploration
+- **Algorithm**: On-policy TD control
+- **State Discretization**: Tile coding
+- **Exploration**: Epsilon-greedy
 
 ### **4. Baseline Policies**
 
@@ -176,13 +174,11 @@ python train_ppo.py --mode compare --model models/ppo_final.pt --episodes 3
 
 | Method          | QoS Rate | Avg Workers | Training Time | Complexity |
 |-----------------|----------|-------------|---------------|------------|
-| **PPO**         |   %      |             |               | High       |
-| ReactiveAverage |   %      |             |               | Low        |
-| ReactiveMaximum |   %      |             |               | Low        |
-| Q-Learning      |   %      |             |               | Medium     |
-| SARSA           |   %      |             |               | Medium     |
+| **SARSA**       |          |             |               | Medium     |
+| ReactiveAverage | 49.96%   | 9.54        | 0 (no train)  | Low        |
+| ReactiveMaximum | 40.14%   | 12.18       | 0 (no train)  | Low        |
 
-**Expected: PPO achieves best QoS with fewest workers!**
+**Expected:SARSA achieves better QoS than baselines through learning!**
 
 ---
 
@@ -223,10 +219,11 @@ python train_ppo.py --mode compare --model models/ppo_final.pt --episodes 3
 
 Key parameters in `utilities/configuration.yml`:
 
-- **Workload**: `base_rate` (300 tasks/min), `phase_duration` (60s)
-- **Scaling**: `min_workers` (1), `max_workers` (32), `initial_workers` (1)
-- **Environment**: `observation_window` (30s), `step_duration` (10s)
-- **QoS**: Task deadlines based on calibrated processing time model
+- **Workload**: `base_rate` (300 tasks/min), `phase_duration` (dynamically calculated)
+- **Scaling**: `min_workers` (1), `max_workers` (32), `initial_workers` (3)
+- **Environment**: `observation_window` (10s), `step_duration` (20s total time including scaling and observation)
+- **QoS**: Task deadlines based on calibrated processing time model (DEADLINE_COEFFICIENT = 2.0)
+- **SARSA**: `learning_rate` (0.1), `gamma` (0.99), `epsilon_decay` (0.995)
 
 ---
 
@@ -283,28 +280,6 @@ redis-cli LLEN worker_queue
 
 ---
 
-## 🎯 Use Cases
-
-### **1. Research**
-
-- Study RL-based autoscaling algorithms
-- Compare different RL methods (PPO, Q-Learning, SARSA)
-- Benchmark against reactive baselines
-
-### **2. Education**
-
-- Learn RL concepts with real-world application
-- Understand serverless architectures
-- Practice Kubernetes and OpenFaaS
-
-### **3. Production**
-
-- Deploy trained RL agents for autoscaling
-- Monitor QoS and resource efficiency
-- Adapt to changing workload patterns
-
----
-
 ## 🚀 Next Steps
 
 ### **1. Experiment with Workloads**
@@ -345,7 +320,6 @@ This project provides:
 
 - ✅ **Complete RL-based autoscaling system** for OpenFaaS
 - ✅ **Gym-compatible environment** for training
-- ✅ **Multiple RL algorithms** (PPO, Q-Learning, SARSA)
 - ✅ **Baseline policies** for comparison
 - ✅ **QoS-aware rewards** for deadline compliance
 - ✅ **Graceful scaling** with SYN/ACK protocol
