@@ -6,7 +6,23 @@ import time
 import uuid
 import random
 import numpy as np
+import logging
 from datetime import datetime, timezone
+
+# Configure logging
+log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+numeric_log_level = getattr(logging, log_level, logging.INFO)
+
+root_logger = logging.getLogger()
+if not root_logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter('[%(levelname)s] %(message)s'))
+    root_logger.addHandler(handler)
+
+root_logger.setLevel(numeric_log_level)
+
+logger = logging.getLogger(__name__)
+logger.setLevel(numeric_log_level)
 
 backoff_factor = 2
 retries = 10
@@ -25,7 +41,7 @@ def get_redis_client():
         try:
             _redisClient = init_redis_client()
         except redis.exceptions.ConnectionError as e:
-            print(f"[ERROR] Redis connection failed: {e}", file=sys.stderr)
+            logger.error(f"Redis connection failed: {e}")
             return {"statusCode": 500, "body": f"Redis connection failed: {e}"}
     return _redisClient
 
@@ -40,13 +56,13 @@ def init_redis_client():
     try:
         return redis.Redis(host=host, port=port, decode_responses=True)
     except redis.exceptions.RedisError as e:
-        print(f"[ERROR] Redis initialization failed: {e}", file=sys.stderr)
+        logger.error(f"Redis initialization failed: {e}")
         sys.exit(1)
 
 def reinit_redis_client():
     """Reinitialize and replace the global Redis client."""
     global _redis_client
-    print("[INFO] Reinitializing Redis client...")
+    logger.info("Reinitializing Redis client...")
     _redis_client = init_redis_client()
 
 def parse_request_body(event):
@@ -62,7 +78,7 @@ def safe_redis_call(func):
     try:
         return func()
     except redis.exceptions.ConnectionError as e:
-        print(f"[ERROR] Redis connection error: {e}. Retrying...")
+        logger.error(f"Redis connection error: {e}. Retrying...")
         time.sleep(1)
         reinit_redis_client()
         return func()
@@ -87,7 +103,7 @@ def send_start_signal(redis_client, start_queue, pod_name, start_timestamp):
     }
 
     safe_redis_call(lambda: redis_client.lpush(start_queue, json.dumps(start_signal)))
-    print(f"[INFO] {pod_name} sent START signal: {start_signal}")
+    logger.info(f"{pod_name} sent START signal: {start_signal}")
 
 
 def extract_result(raw_result, program_start_time):
@@ -106,7 +122,7 @@ def extract_result(raw_result, program_start_time):
         gen_ts = result.get("task_gen_timestamp")
         priority = result.get("task_priority", "normal")
         task_id = result.get("task_id")
-        print(f"[INFO] Extracted result for task {task_id}")
+        logger.info(f"Extracted result for task {task_id}")
         now = (get_utc_now() - program_start_time).total_seconds()
         deadline_met = (now - gen_ts) <= deadline
 
@@ -150,8 +166,8 @@ def simulate_processing_time(image_size, calibrated_model_a, calibrated_model_b,
     """
 
     # Log model info
-    print(f"Model: time = {calibrated_model_a:.2e} × size² + {calibrated_model_b:.6f}")
-    print(f"R² = {calibrated_model_r_squared}")
+    logger.debug(f"Model: time = {calibrated_model_a:.2e} × size² + {calibrated_model_b:.6f}")
+    logger.debug(f"R² = {calibrated_model_r_squared}")
 
     a = calibrated_model_a
     b = calibrated_model_b
@@ -175,7 +191,7 @@ def process_image_processing(task):
     """
     image_size = task.get("task_data_size")
     processing_time = task.get("task_processing_time_simulated")
-    print(f"[INFO] Simulating processing time: {processing_time:.2f} seconds")
+    logger.debug(f"Simulating processing time: {processing_time:.2f} seconds")
 
     # Simulate processing
     time.sleep(processing_time)
@@ -225,7 +241,7 @@ def extract_generated_task(raw_task, program_start_time, calibrated_model_a, cal
             raise ValueError("Task missing required keys")
 
         task_id = task.get('task_id')
-        print(f"[INFO] Extracted task ID: {task_id}")
+        logger.info(f"Extracted task ID: {task_id}")
         now = (get_utc_now() - program_start_time).total_seconds()
 
         processing_time_simulated = simulate_processing_time(task.get('task_data_size'), calibrated_model_a, calibrated_model_b, calibrated_model_seed, calibrated_model_r_squared)
@@ -243,7 +259,7 @@ def extract_generated_task(raw_task, program_start_time, calibrated_model_a, cal
             "task_processing_time_expected": task.get('task_expected_duration')
         }
     except (json.JSONDecodeError, ValueError) as e:
-        print(f"ERROR: Malformed task: {e} - Raw: {raw_task[:256]}", file=sys.stderr)
+        logger.error(f"Malformed task: {e} - Raw: {raw_task[:256]}")
         raise ValueError(f"ERROR: Malformed task: {e}")
 
 # TASK GENERATION FUNCTIONS (for emitter generate mode)
@@ -321,12 +337,12 @@ def generate_task_for_generation(program_start_time, calibrated_model_a=None, ca
 
         # Use calibrated model for deadline calculation (more accurate)
         deadline_base = processing_time_simulated
-        print(f"[DEBUG] Calibrated model: size={image_size}, time={processing_time_simulated:.3f}s")
+        logger.debug(f"Calibrated model: size={image_size}, time={processing_time_simulated:.3f}s")
     else:
         # Fallback: use expected duration
         processing_time_simulated = expected_duration
         deadline_base = expected_duration
-        print(f"[DEBUG] Expected duration: size={image_size}, time={processing_time_simulated:.3f}s")
+        logger.debug(f"Expected duration: size={image_size}, time={processing_time_simulated:.3f}s")
     
     # Calculate deadline using QoS model (based on calibrated or expected duration)
     deadline = calculate_task_deadline(deadline_base)
@@ -399,7 +415,7 @@ def push_task_to_worker_queue(redis_client, queue_name, task_json):
         redis_client.lpush(queue_name, task_json)
         return True
     except Exception as e:
-        print(f"[ERROR] Failed to push task: {e}")
+        logger.error(f"Failed to push task: {e}")
         return False
 
 
@@ -414,13 +430,13 @@ def generate_tasks_for_phase(phase, phase_name, base_rate, phase_duration, windo
     # Calculate exact target for this phase
     target_tasks = get_target_tasks_for_phase(phase, base_rate, phase_duration)
 
-    print(f"\n{'='*70}")
-    print(f"PHASE {phase}: {phase_name}")
-    print(f"{'='*70}")
-    print(f"Duration: {phase_duration}s ({phase_duration/60:.1f} min)")
-    print(f"Window size: {window_duration}s")
-    print(f"Target tasks: {target_tasks}")
-    print(f"{'='*70}\n")
+    logger.info(f"\n{'='*70}")
+    logger.info(f"PHASE {phase}: {phase_name}")
+    logger.info(f"{'='*70}")
+    logger.info(f"Duration: {phase_duration}s ({phase_duration/60:.1f} min)")
+    logger.info(f"Window size: {window_duration}s")
+    logger.info(f"Target tasks: {target_tasks}")
+    logger.info(f"{'='*70}\n")
 
     num_windows = int(phase_duration / window_duration)
     phase_start_time = time.time()
@@ -448,10 +464,10 @@ def generate_tasks_for_phase(phase, phase_name, base_rate, phase_duration, windo
             # Last window: generate exactly remaining tasks
             num_tasks = remaining_tasks
 
-        print(f"\n[Window {window+1}/{num_windows}] Time: {time_in_phase:.1f}s, Rate: {rate:.2f} tasks/min, Tasks: {num_tasks}")
+        logger.info(f"\n[Window {window+1}/{num_windows}] Time: {time_in_phase:.1f}s, Rate: {rate:.2f} tasks/min, Tasks: {num_tasks}")
 
         if num_tasks <= 0:
-            print("  No tasks in this window")
+            logger.debug("  No tasks in this window")
             # No sleep - move to next window immediately
             continue
 
@@ -490,7 +506,7 @@ def generate_tasks_for_phase(phase, phase_name, base_rate, phase_duration, windo
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
-        print(f"  Generated {tasks_in_window} tasks (total: {total_tasks_generated}/{target_tasks})")
+        logger.info(f"  Generated {tasks_in_window} tasks (total: {total_tasks_generated}/{target_tasks})")
 
-    print(f"\n[PHASE {phase} COMPLETE] Total tasks generated: {total_tasks_generated}")
+    logger.info(f"\n[PHASE {phase} COMPLETE] Total tasks generated: {total_tasks_generated}")
     return total_tasks_generated

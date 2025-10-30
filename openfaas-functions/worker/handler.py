@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import numpy as np
+import logging
 from datetime import datetime
 from utils import (
     get_redis_client,
@@ -13,6 +14,9 @@ from utils import (
     get_utc_now,
     process_image_task
 )
+
+# Logger configured in utilities.utils
+logger = logging.getLogger(__name__)
 
 
 def handle(event, context):
@@ -31,14 +35,14 @@ def handle(event, context):
     if program_start_time_str:
         program_start_time = datetime.fromisoformat(program_start_time_str)
     else:
-        print("[ERROR] START_TIMESTAMP environment variable not set.", file=sys.stderr)
+        logger.error("START_TIMESTAMP environment variable not set.")
         sys.exit(1)
 
     if not all([worker_q, result_q, control_syn_q, control_ack_q, start_q, wait_time, program_start_time]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
-    print(f"\n[TIMER] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
-    print(f"[INFO] Worker received body: {body}")
+    logger.info(f"\n[TIMER] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
+    logger.debug(f"Worker received body: {body}")
 
     # send start signal to start queue
     send_start_signal(redis_client, start_q, pod_name, (get_utc_now() - program_start_time).total_seconds())
@@ -47,16 +51,16 @@ def handle(event, context):
 
     while True:
         iteration_start = (get_utc_now() - program_start_time).total_seconds()
-        print(f"[TIMER]-------------Iteration start at {iteration_start:.4f}-----------------")
+        logger.debug(f"[TIMER]-------------Iteration start at {iteration_start:.4f}-----------------")
         if previous_iteration_start:
-            print(f"[TIMER] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
+            logger.debug(f"[TIMER] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
         previous_iteration_start = iteration_start
 
         try:
             control_msg = fetch_control_message(redis_client, control_syn_q)
             if control_msg and control_msg.get("action") == "SYN":
                 if control_msg.get("type") == "SCALE_DOWN":
-                    print(f"[INFO] Received SCALE_DOWN control message: {control_msg}")
+                    logger.info(f"Received SCALE_DOWN control message: {control_msg}")
                     # Acknowledge the scale down request
                     ack_msg = {
                         "type": "SCALE_DOWN",
@@ -68,19 +72,19 @@ def handle(event, context):
                     }
 
                     safe_redis_call(lambda: redis_client.lpush(control_ack_q, json.dumps(ack_msg)))
-                    print(f"[INFO] Sent ACK for control message: {ack_msg}")
+                    logger.info(f"Sent ACK for control message: {ack_msg}")
                     return {
                         "statusCode": 200,
                         "body": f"Worker pod {pod_name} acknowledged scale down."
                     }
                 elif control_msg.get("type") == "TERMINATE":
-                    print(f"[INFO] Received TERMINATE control message: {control_msg}")
+                    logger.info(f"Received TERMINATE control message: {control_msg}")
                     return {
                         "statusCode": 200,
                         "body": f"Worker pod {pod_name} acknowledged termination."
                     }
                 else:
-                    print(f"[WARNING] Unknown control message type: {control_msg.get('type')}")
+                    logger.warning(f"Unknown control message type: {control_msg.get('type')}")
 
             # Pop task from queue
             raw_task = safe_redis_call(lambda: redis_client.rpop(worker_q))
@@ -91,21 +95,21 @@ def handle(event, context):
                 continue
             else:
                 # Extract task
-                print(f"\n[TIMER] got task at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
+                logger.info(f"\n[TIMER] got task at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
                 task = json.loads(raw_task)
                 tasks_processed += 1
 
                 task_id = task.get("task_id")
                 task_type = task.get("task_application")
                 task_priority = task.get("task_priority", "normal")  # Default to "normal" if missing
-                print(f"[INFO] Processing task ID: {task_id}, Priority: {task_priority}")
+                logger.info(f"Processing task ID: {task_id}, Priority: {task_priority}")
 
                 # Validate task type (only image_processing supported)
                 if task_type != "image_processing":
                     raise ValueError("Unsupported task application")
 
                 # Process the task
-                print(f"[INFO] Simulating processing time: {task.get("task_processing_time_simulated"):.2f} seconds")
+                logger.debug(f"Simulating processing time: {task.get('task_processing_time_simulated'):.2f} seconds")
                 result_data = process_image_task(task, program_start_time)
 
                 # Add any additional processing delay (if configured)
@@ -134,13 +138,13 @@ def handle(event, context):
 
                 # Push result to queue
                 safe_redis_call(lambda: redis_client.lpush(result_q, json.dumps(result)))
-                print(f"[TIMER] Processed {tasks_processed} tasks at {now} from {worker_q} and pushed result to '{result_q}' on pod {pod_name}")
+                logger.info(f"[TIMER] Processed {tasks_processed} tasks at {now} from {worker_q} and pushed result to '{result_q}' on pod {pod_name}")
 
         except Exception as e:
-            print(f"[ERROR] Failed to process task: {e}", file=sys.stderr)
+            logger.error(f"Failed to process task: {e}")
             break
 
-    print(f"[INFO] Worker processed {tasks_processed} tasks.")
+    logger.info(f"Worker processed {tasks_processed} tasks.")
 
     return {
         "statusCode": 200,

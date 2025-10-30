@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import logging
 from datetime import datetime
 from utils import (
     get_redis_client,
@@ -12,6 +13,9 @@ from utils import (
     get_utc_now,
     extract_result,
 )
+
+# Logger configured in utilities.utils
+logger = logging.getLogger(__name__)
 
 def handle(event, context):
     pod_name = os.environ.get("HOSTNAME")
@@ -28,14 +32,14 @@ def handle(event, context):
     if program_start_time_str:
         program_start_time = datetime.fromisoformat(program_start_time_str)
     else:
-        print("[ERROR] START_TIMESTAMP environment variable not set.", file=sys.stderr)
+        logger.error("START_TIMESTAMP environment variable not set.")
         sys.exit(1)
 
     if not all([input_q, result_q, output_q, start_q, wait_time, program_start_time]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
-    print(f"\n[TIMER] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
-    print(f"[INFO] Collector received body: {body}")
+    logger.info(f"\n[TIMER] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
+    logger.debug(f"Collector received body: {body}")
 
     # send start signal to start queue
     send_start_signal(redis_client, start_q, pod_name, (get_utc_now() - program_start_time).total_seconds())
@@ -44,15 +48,15 @@ def handle(event, context):
 
     while True:
         iteration_start = (get_utc_now() - program_start_time).total_seconds()
-        print(f"[TIMER]-------------Iteration start at {iteration_start:.4f}-----------------")
+        logger.debug(f"[TIMER]-------------Iteration start at {iteration_start:.4f}-----------------")
         if previous_iteration_start:
-            print(f"[TIMER] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
+            logger.debug(f"[TIMER] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
         previous_iteration_start = iteration_start
 
         try:
             control_msg = fetch_control_message(redis_client, control_syn_q)
             if control_msg and control_msg.get("action") == "SYN" and control_msg.get("type") == "TERMINATE":
-                print(f"[INFO] Received TERMINATE control message: {control_msg}")
+                logger.info(f"Received TERMINATE control message: {control_msg}")
                 return {
                     "statusCode": 200,
                     "body": f"Collector pod {pod_name} acknowledged termination."
@@ -61,27 +65,27 @@ def handle(event, context):
             raw_result = safe_redis_call(lambda: redis_client.rpop(result_q))
 
             if not raw_result:
-                print(f"[INFO] No result found in '{result_q}', waiting {wait_time} seconds...")
+                logger.debug(f"No result found in '{result_q}', waiting {wait_time} seconds...")
                 time.sleep(float(wait_time))
                 continue
             else:
-                print(f"\n[TIMER] got result at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
+                logger.info(f"\n[TIMER] got result at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
                 # Fetch and parse results with QoS calculation
                 result = extract_result(raw_result, program_start_time)
                 num_results += 1
 
                 # Log QoS information
-                print(f"[INFO] Task {result['task_id']}: {result['task_QoS']}")
+                logger.info(f"Task {result['task_id']}: {result['task_QoS']}")
 
                 safe_redis_call(lambda: redis_client.lpush(output_q, json.dumps(result)))
 
-                print(f"[TIMER] Processed {num_results} results at {(get_utc_now() - program_start_time).total_seconds():.4f} from '{result_q}' to '{output_q}' on pod {pod_name}")
+                logger.info(f"[TIMER] Processed {num_results} results at {(get_utc_now() - program_start_time).total_seconds():.4f} from '{result_q}' to '{output_q}' on pod {pod_name}")
 
         except Exception as e:
-            print(f"ERROR: Unexpected error: {e}", file=sys.stderr)
+            logger.error(f"Unexpected error: {e}")
             break
 
-    print(f"[INFO] Collector processed {num_results} results.")
+    logger.info(f"Collector processed {num_results} results.")
 
     return {
         "statusCode": 200,

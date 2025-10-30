@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import logging
 from datetime import datetime
 from utils import (
     get_redis_client,
@@ -13,6 +14,9 @@ from utils import (
     extract_generated_task,
     generate_tasks_for_phase  # Phase-based task generation
 )
+
+# Logger configured in utilities.utils
+logger = logging.getLogger(__name__)
 
 def handle(event, context):
     pod_name = os.environ.get("HOSTNAME")
@@ -36,34 +40,34 @@ def handle(event, context):
     if program_start_time_str:
         program_start_time = datetime.fromisoformat(program_start_time_str)
     else:
-        print("[ERROR] START_TIMESTAMP environment variable not set.", file=sys.stderr)
+        logger.error("START_TIMESTAMP environment variable not set.")
         sys.exit(1)
 
     if not all([input_q, worker_q, start_q, wait_time, program_start_time, calibrated_model_a, calibrated_model_b, calibrated_model_seed, calibrated_model_r_squared, base_rate, phase_duration, window_duration]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
-    print(f"[INFO] Emitter received body: {body}")
-    print(f"\n[TIMER] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
+    logger.debug(f"Emitter received body: {body}")
+    logger.info(f"\n[TIMER] Invoked at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
 
     # send start signal to start queue
     send_start_signal(redis_client, start_q, pod_name, (get_utc_now() - program_start_time).total_seconds())
 
-    print(f"[INFO] Emitter starting: reading phase configs from '{input_q}'")
-    print(f"[INFO] Will generate tasks to '{worker_q}'")
+    logger.info(f"Emitter starting: reading phase configs from '{input_q}'")
+    logger.info(f"Will generate tasks to '{worker_q}'")
 
     previous_iteration_start = None
 
     while True:
         iteration_start = (get_utc_now() - program_start_time).total_seconds()
-        print(f"[TIMER]-------------Iteration start at {iteration_start:.4f}-----------------")
+        logger.debug(f"[TIMER]-------------Iteration start at {iteration_start:.4f}-----------------")
         if previous_iteration_start:
-            print(f"[TIMER] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
+            logger.debug(f"[TIMER] Iteration time: {(iteration_start - previous_iteration_start):.4f} sec")
         previous_iteration_start = iteration_start
 
         try:
             control_msg = fetch_control_message(redis_client, control_syn_q)
             if control_msg and control_msg.get("action") == "SYN" and control_msg.get("type") == "TERMINATE":
-                print(f"[INFO] Received TERMINATE control message: {control_msg}")
+                logger.info(f"Received TERMINATE control message: {control_msg}")
                 return {
                     "statusCode": 200,
                     "body": f"Emitter pod {pod_name} acknowledged termination."
@@ -72,7 +76,7 @@ def handle(event, context):
             raw_data = safe_redis_call(lambda: redis_client.rpop(input_q))
 
             if not raw_data:
-                print(f"[INFO] No data in '{input_q}', waiting {wait_time} seconds...")
+                logger.debug(f"No data in '{input_q}', waiting {wait_time} seconds...")
                 time.sleep(float(wait_time))
                 continue
             
@@ -80,14 +84,14 @@ def handle(event, context):
             try:
                 data = json.loads(raw_data)
             except json.JSONDecodeError as e:
-                print(f"[ERROR] Invalid JSON in input_queue: {e}")
+                logger.error(f"Invalid JSON in input_queue: {e}")
                 continue
             
             # Check if it's a phase config or a regular task
             if data.get('type') == 'phase_config':
                 # Process phase config: generate tasks for this phase
-                print(f"\n[INFO] Processing Phase {data['phase_number']}: {data['phase_name']}")
-                print(f"[INFO] Pattern: {data['phase_pattern']}, Target: {data['target_tasks']} tasks")
+                logger.info(f"\n[INFO] Processing Phase {data['phase_number']}: {data['phase_name']}")
+                logger.info(f"Pattern: {data['phase_pattern']}, Target: {data['target_tasks']} tasks")
                 
                 try:
                     phase_tasks = generate_tasks_for_phase(
@@ -105,27 +109,27 @@ def handle(event, context):
                         calibrated_model_r_squared=calibrated_model_r_squared
                     )
                     tasks_generated += phase_tasks
-                    print(f"[INFO] Phase {data['phase_number']} complete: {phase_tasks} tasks generated")
+                    logger.info(f"Phase {data['phase_number']} complete: {phase_tasks} tasks generated")
                 except Exception as phase_error:
-                    print(f"[ERROR] Phase generation failed: {phase_error}", file=sys.stderr)
+                    logger.error(f"Phase generation failed: {phase_error}")
                     import traceback
                     traceback.print_exc()
             else:
                 # Regular task: forward to worker_queue
-                print(f"\n[TIMER] got task at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
+                logger.info(f"\n[TIMER] got task at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
                 task = extract_generated_task(raw_data, program_start_time, calibrated_model_a, calibrated_model_b, calibrated_model_seed, calibrated_model_r_squared)
                 tasks_generated += 1
 
                 safe_redis_call(lambda: redis_client.lpush(worker_q, json.dumps(task)))
-                print(f"[TIMER] Pushed {tasks_generated} tasks at {(get_utc_now() - program_start_time).total_seconds():.4f} from '{input_q}' to '{worker_q}' on pod {pod_name}")
+                logger.info(f"[TIMER] Pushed {tasks_generated} tasks at {(get_utc_now() - program_start_time).total_seconds():.4f} from '{input_q}' to '{worker_q}' on pod {pod_name}")
 
         except Exception as e:
-            print(f"ERROR: Unexpected error: {e}", file=sys.stderr)
+            logger.error(f"Unexpected error: {e}")
             import traceback
             traceback.print_exc()
             break
 
-    print(f"[INFO] Emitter processed {tasks_generated} tasks.")
+    logger.info(f"Emitter processed {tasks_generated} tasks.")
 
     return {
         "statusCode": 200,
