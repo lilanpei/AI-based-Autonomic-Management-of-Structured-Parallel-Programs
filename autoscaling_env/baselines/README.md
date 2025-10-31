@@ -15,41 +15,48 @@ This directory contains **reactive baseline policies** for autoscaling compariso
 
 ### **1. ReactiveAverage**
 
-**Strategy**: Scale based on average processing time
+**Strategy**: Horizon-based scaling using average processing time
 
 **Formula**:
 ```
-optimal_workers = (worker_queue / avg_time) + (arrival_rate × avg_time)
+tasks_per_worker = max(horizon_seconds / avg_time, 1)
+workers_for_queue = worker_queue / tasks_per_worker
+workers_for_arrivals = arrival_rate * avg_time
+optimal_workers = (workers_for_queue + workers_for_arrivals) * safety_factor
 ```
 
-**Components**:
-- **First term**: Workers needed to clear current queue
-- **Second term**: Workers needed to handle incoming tasks
+**Defaults**:
+- `horizon_seconds` = environment `step_duration` (override via `--horizon`/`set_horizon`)
+- `safety_factor` = 1.0
 
 **Behavior**:
-- Conservative scaling
-- Smooth adjustments based on average load
+- Conservative scaling tuned to current control window
+- Smooth adjustments informed by backlog and expected arrivals
 - Good for stable workloads
 
 ---
 
 ### **2. ReactiveMaximum**
 
-**Strategy**: Scale based on maximum processing time
+**Strategy**: Horizon-based scaling using maximum processing time (worst case)
 
 **Formula**:
 ```
-optimal_workers = (worker_queue / max_time) + (arrival_rate × max_time)
+service_time = max(max_time, avg_time, 0.1)
+tasks_per_worker = max(horizon_seconds / service_time, 1)
+workers_for_queue = worker_queue / tasks_per_worker
+workers_for_arrivals = arrival_rate * service_time
+optimal_workers = (workers_for_queue + workers_for_arrivals) * safety_factor
 ```
 
-**Components**:
-- **First term**: Workers needed to clear current queue
-- **Second term**: Workers needed to handle incoming tasks
+**Defaults**:
+- `horizon_seconds` = environment `step_duration`
+- `safety_factor` = 1.0
 
 **Behavior**:
-- Aggressive scaling
-- Responds to worst-case scenarios
-- Better for bursty workloads
+- Protective against QoS violations
+- Responds faster to bursts while remaining bounded
+- Better for variable or unpredictable workloads
 
 ---
 
@@ -70,12 +77,10 @@ When queue is empty or processing time is zero:
 
 ### **Action Mapping**
 
-Policies map calculated deltas to discrete actions:
-- `delta ≥ 2.5`: Scale up by 2
-- `delta ≥ 1.0`: Scale up by 1
-- `delta ≤ -2.5`: Scale down by 2
-- `delta ≤ -1.0`: Scale down by 1
-- Otherwise: No change
+Policies map the worker delta to the 3-action space used by the environment:
+- `delta ≥ 0.5`: Scale up by 1 (`action = 2`)
+- `delta ≤ -0.5`: Scale down by 1 (`action = 0`)
+- Otherwise: No change (`action = 1`)
 
 ---
 
@@ -91,7 +96,7 @@ python test_reactive_baselines.py --agent average --steps 15
 ### **Test Both Policies**
 
 ```bash
-python test_reactive_baselines.py --agent both --steps 15
+python test_reactive_baselines.py --agent both --steps 50 --step-duration 10 --horizon 10
 ```
 
 ### **Compare with RL Agent**

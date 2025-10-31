@@ -21,12 +21,18 @@ docker push lilanpei/gateway:latest
 ### faas-netes (from faas-netes/ directory):
 ```bash
 docker build --no-cache -t faas-netes .
+- `kubectl`
+- `helm`
+- `faas-cli`
+- Python 3.9+
+
+**Tip:** Ensure the **autoscaling environment** is configured with the latest reward parameters (`utilities/configuration.yml`) and 3-action scaling when testing autoscaling workloads against this OpenFaaS deployment.
 docker tag faas-netes:latest lilanpei/faas-netes:latest  # Replace 'lilanpei' with your Docker Hub username
 docker push lilanpei/faas-netes:latest
 ```
 > ⚠️ Don’t forget to replace lilanpei with your actual Docker Hub username if you’re using your own registry.
 
-## 📦 Add or Update the OpenFaaS Helm Repository
+## Add or Update the OpenFaaS Helm Repository
 ```bash
 helm repo add openfaas https://openfaas.github.io/faas-netes/
 helm repo update

@@ -13,11 +13,12 @@ import numpy as np
 from gym import spaces
 from datetime import datetime
 from kubernetes import client, config
- 
+
 # Add project root to path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
-sys.path.append(project_root)
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
 from utilities.utilities import (
     get_config,
@@ -33,6 +34,11 @@ from utilities.utilities import (
     safe_invoke_function_async,
     run_faas_cli
 )
+
+from utilities.logger import get_logger, bind_logger_to_print
+
+logger = get_logger(__name__)
+print = bind_logger_to_print(logger)
 
 
 class OpenFaaSAutoscalingEnv(gym.Env):
@@ -55,11 +61,9 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         - qos_success_rate: Recent QoS success rate
 
     Action Space:
-        - 0: Scale down by 2 (-2)
-        - 1: Scale down by 1 (-1)
-        - 2: No change (0)
-        - 3: Scale up by 1 (+1)
-        - 4: Scale up by 2 (+2)
+        - 0: Scale down by 1 (-1)
+        - 1: No change (0)
+        - 2: Scale up by 1 (+1)
 
     Reward:
         - Positive: High QoS success rate, low queue length
@@ -73,7 +77,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
                  min_workers=1,
                  observation_window=10,  # seconds
                  step_duration=10,  # seconds between actions
-                 max_steps=100,
+                 max_steps=50,
                  initial_workers=1,
                  initialize_workflow=True):
         """
@@ -99,40 +103,47 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         self.initial_workers = initial_workers
         self.initialize_workflow = initialize_workflow
 
-        # Action space: 5 discrete actions
-        self.action_space = spaces.Discrete(5)
-        self.action_map = {0: -2, 1: -1, 2: 0, 3: +1, 4: +2}
+        # Initialize workflow if requested (like workflow_controller.py)
+        if self.initialize_workflow:
+            print("\n" + "="*70)
+            print("INITIALIZING OPENFAAS WORKFLOW")
+            print("="*70)
+            # Use the same episode initialization logic as reset()
+            self._initialize_episode()
+            print("="*70 + "\n")
 
-        # Observation space: [input_q, worker_q, result_q, output_q, workers, avg_time, max_time, arrival_rate, qos_rate]
-        self.observation_space = spaces.Box(
-            low=np.array([0, 0, 0, 0, self.min_workers, 0, 0, 0, 0]),
-            high=np.array([10000, 10000, 10000, 10000, self.max_workers, 10, 10, 100, 1.0]),
-            dtype=np.float32
-        )
-
-        # State tracking
-        self.current_step = 0
-        self.program_start_time = None
-        self.episode_start_time = None
+    def _reset_episode_state(self):
+        """
+        Reset episode-specific state variables.
+        Called by both __init__() and reset() to ensure consistency.
+        """
+        # Reset State tracking
         self.workflow_initialized = False
 
-        # Metrics tracking
+        # Initialize episode state (will be reset in reset())
+        self.redis_client = None
+
+        # Reset step counter
+        self.current_step = 0
+        self.episode_start_time = time.time()
+
+        # Reset program start time for new episode
+        self.program_start_time = get_utc_now()
+        print(f"[INFO] Set program_start_time to: {self.program_start_time}")
+
+        # Reinitialize config with new program_start_time
+        self.config = initialize_environment(self.program_start_time)
+
+        # Reset Metrics tracking
         self.task_history = []  # (timestamp, processing_time, qos_success)
         self.queue_history = []  # (timestamp, queue_length)
         self.worker_history = []  # (timestamp, num_workers)
         self.processed_task_ids = set()  # Track which tasks we've already processed
 
-        # Episode statistics
+        # Reset Episode statistics
         self.total_reward = 0
         self.total_qos_violations = 0
         self.total_scaling_actions = 0
-
-        # Set program start time
-        self.program_start_time = get_utc_now()
-
-        # Load configuration
-        self.config = initialize_environment(self.program_start_time)
-        self.redis_client = None
 
         # Kubernetes clients
         try:
@@ -142,35 +153,33 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         self.core_v1_api = client.CoreV1Api()
         self.apps_v1_api = client.AppsV1Api()
 
-        # Initialize workflow if requested (like workflow_controller.py)
-        if self.initialize_workflow:
-            print("\n" + "="*70)
-            print("INITIALIZING OPENFAAS WORKFLOW")
-            print("="*70)
-            self._initialize_farm()
-            print("="*70 + "\n")
 
-    def reset(self):
+    def _initialize_episode(self):
         """
-        Reset environment to initial state for new episode
-        Generates new tasks (Step 3 from workflow_controller.py)
+        Initialize/reset episode with consistent timing logic.
+        Used by both __init__() and reset() to ensure identical behavior.
         """
-        print("\n" + "="*70)
-        print("RESETTING ENVIRONMENT FOR NEW EPISODE")
-        print("="*70)
 
-        # Reset step counter
-        self.current_step = 0
-        self.episode_start_time = time.time()
+        # Action space: 3 discrete actions
+        self.action_space = spaces.Discrete(3)
+        self.action_map = {0: -1, 1: 0, 2: +1}
 
-        # Reset metrics
-        self.task_history = []
-        self.queue_history = []
-        self.worker_history = []
-        self.processed_task_ids = set()
-        self.total_reward = 0
-        self.total_qos_violations = 0
-        self.total_scaling_actions = 0
+        # Observation space: [input_q, worker_q, result_q, output_q, workers, avg_time, max_time, arrival_rate, qos_rate]
+        self.observation_space = spaces.Box(
+            low=np.array([0, 0, 0, 0, self.min_workers, 0, 0, 0, 0], dtype=np.float32),
+            high=np.array([10000, 10000, 10000, 10000, self.max_workers, 10, 10, 100, 1.0], dtype=np.float32),
+            dtype=np.float32
+        )
+
+        # Reset all episode-specific state
+        self._reset_episode_state()
+
+        # Reinitialize farm if requested (ensures emitter/collector have new program_start_time)
+
+        print("[INFO] Initializing farm with program_start_time...")
+        print("[INFO] This will take ~30-60 seconds...")
+        self._initialize_farm()
+        print("[INFO] ✓ Farm initialized")
 
         # Ensure Redis client is connected
         if self.redis_client is None:
@@ -220,6 +229,21 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         observation = self._get_observation()
 
         print(f"[INFO] Initial observation: {observation}")
+
+        return observation
+
+    def reset(self):
+        """
+        Reset environment to initial state for new episode.
+        Uses the same logic as __init__() to ensure consistent timing.
+        """
+        print("\n" + "="*70)
+        print("RESETTING ENVIRONMENT FOR NEW EPISODE")
+        print("="*70)
+
+        # Use shared episode initialization logic
+        observation = self._initialize_episode()
+
         print("="*70 + "\n")
 
         return observation
@@ -229,7 +253,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         Execute one scaling action and return new state
         
         Args:
-            action: Integer 0-4 representing scaling action
+            action: Integer 0-2 representing scaling action
             
         Returns:
             observation: New state
@@ -270,7 +294,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
 
         # Wait for remaining step duration to observe effects
         # step_duration is the TOTAL time for the step (scaling + observation)
-        remaining_time = max(0, self.step_duration - scaling_time)
+        remaining_time = max(0, self.step_duration - scaling_time - 0.15) # 0.15s for observation
         if remaining_time > 0:
             print(f"[INFO] Scaling took {scaling_time:.2f}s, waiting {remaining_time:.2f}s more (total step: {self.step_duration}s)...")
             time.sleep(remaining_time)
@@ -301,6 +325,8 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             print(f"[INFO] Waiting for all tasks to complete...")
             self._wait_for_task_completion()
 
+        step_duration = time.time() - step_start_time
+
         # Additional info
         info = {
             'step': self.current_step,
@@ -309,10 +335,11 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             'qos_rate': observation[8],
             'total_reward': self.total_reward,
             'scaling_actions': self.total_scaling_actions,
-            'qos_violations': self.total_qos_violations
+            'qos_violations': self.total_qos_violations,
+            'scaling_time': scaling_time,
+            'step_duration': step_duration
         }
 
-        step_duration = time.time() - step_start_time
         print(f"[REWARD] {reward:.2f} | Total: {self.total_reward:.2f}")
         print(f"[INFO] Step completed in {step_duration:.2f}s")
         print(f"{'='*70}\n")
@@ -651,6 +678,20 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             exact_match=False
         )
 
+        # What we can track accurately:
+        # - worker_queue_length: Tasks WAITING for workers (not being processed)
+        # - len(task_history): Tasks that have been COMPLETED and collected
+
+        # Estimate idle workers (rough approximation)
+        # If worker_queue is empty, workers are likely idle
+        # If worker_queue has tasks, some workers are likely processing
+        completed_tasks = len(self.task_history)
+
+        print(f"[QUEUES] Input: {input_queue_length}, Worker: {worker_queue_length}, "
+              f"Result: {result_queue_length}, Output: {output_queue_length}")
+        print(f"[PROGRESS] Workers: {workers}, Completed: {completed_tasks}, "
+              f"Waiting: {worker_queue_length}")
+
         # Processing time metrics (from recent tasks)
         recent_tasks = [t for t in self.task_history if t[0] >= window_start]
 
@@ -679,9 +720,10 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             # No recent task data - check if we're still in task generation phase
             elapsed_time = current_time - self.episode_start_time
             phase_duration = self.config.get("phase_duration", 60)
+            number_of_phases = self.config.get("number_of_phases", 4)
 
-            if elapsed_time < phase_duration:
-                # Still generating tasks - use configured base rate
+            if elapsed_time < phase_duration * number_of_phases:
+                # Still generating tasks - use configured base rate as default rate
                 arrival_rate = self.config.get("base_rate", 300) / 60.0  # Convert to tasks/sec
             else:
                 # Past generation phase - no more tasks
@@ -708,34 +750,61 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         return observation
 
     def _calculate_reward(self, observation, delta):
-        """
-        Calculate reward based on current state and action
+        """Calculate reward for the current state/action pair.
 
-        Reward components:
-        1. QoS success: +10 per successful task
-        2. Queue penalty: -0.1 per task in worker queue
-        3. Worker cost: -1 per worker
-        4. Scaling penalty: -2 for unnecessary scaling
+        The reward blends multiple signals so policies can balance QoS, queue
+        stability, and resource efficiency. All coefficients can be overridden
+        from configuration under the ``reward`` section:
+
+        ``reward``
+            ``target_qos``: Desired QoS threshold (default 0.9)
+            ``queue_target``: Preferred worker queue length (default 50)
+            ``idle_queue_threshold``: Queue length considered "idle" (default 1)
+            ``weights``: Dict with keys ``qos``, ``queue``, ``worker``, ``scaling``, ``idle``
+                controlling each term's magnitude.
         """
+
+        # Unpack observation vector
         input_q, worker_q, result_q, output_q, workers, avg_time, max_time, arrival_rate, qos_rate = observation
 
-        # QoS reward (most important)
-        qos_reward = qos_rate * 10
+        reward_cfg = self.config.get("reward", {})
+        weights = reward_cfg.get("weights", {})
 
-        # Queue penalty (discourage buildup in worker queue)
-        queue_penalty = -0.1 * worker_q
+        qos_weight = float(weights.get("qos", 10.0))
+        queue_weight = float(weights.get("queue", 5.0))
+        worker_weight = float(weights.get("worker", 1.0))
+        scaling_weight = float(weights.get("scaling", 2.0))
+        idle_weight = float(weights.get("idle", 1.0))
 
-        # Worker cost (encourage efficiency)
-        worker_cost = -1.0 * workers
+        target_qos = float(reward_cfg.get("target_qos", 0.9))
+        queue_target = max(float(reward_cfg.get("queue_target", 50.0)), 1.0)
+        idle_queue_threshold = float(reward_cfg.get("idle_queue_threshold", 1.0))
 
-        # Scaling penalty (discourage unnecessary actions)
-        scaling_penalty = -2.0 if delta != 0 else 0
+        # QoS term: positive when meeting/exceeding target, negative otherwise
+        qos_delta = qos_rate - target_qos
+        qos_reward = qos_weight * qos_delta
+
+        # Queue term: penalize backlog relative to target queue length
+        queue_ratio = worker_q / queue_target
+        queue_penalty = -queue_weight * queue_ratio
+
+        # Worker term: penalize workers beyond the configured minimum
+        worker_excess = max(0.0, workers - self.min_workers)
+        worker_span = max(1.0, self.max_workers - self.min_workers)
+        worker_penalty = -worker_weight * (worker_excess / worker_span)
+
+        # Scaling term: penalize frequent/large adjustments
+        scaling_penalty = -scaling_weight * abs(delta)
+
+        # Idle term: discourage keeping many workers when the queue is empty
+        idle_penalty = -idle_weight if worker_q <= idle_queue_threshold and workers > self.min_workers else 0.0
 
         total_reward = (
             qos_reward +
             queue_penalty +
-            worker_cost +
-            scaling_penalty
+            worker_penalty +
+            scaling_penalty +
+            idle_penalty
         )
 
         return total_reward

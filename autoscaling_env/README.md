@@ -8,19 +8,12 @@ This directory contains the **OpenFaaS Autoscaling Gym Environment** for reinfor
 
 ```
 autoscaling_env/
-├── openfaas_autoscaling_env.py   # Main Gym environment (9D observation)
-├── test_reactive_baselines.py    # Test baseline policies
 ├── baselines/                     # Reactive baseline policies
-│   ├── reactive_baselines.py      # ReactiveAverage, ReactiveMaximum
+│   ├── reactive_policies.py       # ReactiveAverage, ReactiveMaximum
+│   ├── test_reactive_baselines.py # Test baseline policies (supports --horizon)
 │   └── README.md                  # Baseline documentation
 ├── rl/                            # RL agents and training
-│   ├── sarsa_agent.py             # SARSA with tile coding
-│   ├── train_sarsa.py             # Training script
-│   ├── test_sarsa.py              # Evaluation script
-│   └── README.md                  # RL documentation
-├── models/                        # Saved RL models
-│   └── sarsa/                     # SARSA checkpoints
-└── plots/                         # Performance plots
+└── openfaas_autoscaling_env.py    # Main Gym environment (9D observation)
 ```
 
 ---
@@ -42,25 +35,22 @@ A Gym-compatible environment for autoscaling OpenFaaS workers.
 - `arrival_rate`: Task arrival rate (tasks/second)
 - `qos_rate`: QoS success rate (0-1, deadline compliance)
 
-**Action Space** (5 discrete actions):
-- `0`: Scale down by 2 workers
-- `1`: Scale down by 1 worker
-- `2`: No change
-- `3`: Scale up by 1 worker
-- `4`: Scale up by 2 workers
+**Action Space** (3 discrete actions):
+- `0`: Scale down by 1 worker
+- `1`: No change
+- `2`: Scale up by 1 worker
 
-**Reward Function**:
+**Reward Function** (configurable):
 ```
-reward = qos_reward + queue_penalty + worker_cost + scaling_penalty + efficiency_bonus + violation_penalty
+reward = qos_delta_term + queue_penalty + worker_penalty + scaling_penalty + idle_penalty
 ```
 
-Components:
-- `qos_reward`: +10 × qos_rate (encourage high QoS)
-- `queue_penalty`: -0.1 × queue_length (discourage buildup)
-- `worker_cost`: -1.0 × workers (encourage efficiency)
-- `scaling_penalty`: -2.0 if action ≠ 0 (discourage unnecessary scaling)
-- `efficiency_bonus`: +5.0 if qos > 95% and workers < 10
-- `violation_penalty`: -20.0 if qos < 80% (strong penalty)
+Components (weights + targets in `utilities/configuration.yml`):
+- `qos_delta_term`: QoS rate relative to `reward.target_qos`
+- `queue_penalty`: Queue length normalised by `reward.queue_target`
+- `worker_penalty`: Worker usage above `min_workers`, scaled to available range
+- `scaling_penalty`: Proportional to `abs(delta)` to discourage thrashing
+- `idle_penalty`: Applies when the queue is (nearly) empty but extra workers remain
 
 ---
 
@@ -70,7 +60,7 @@ Components:
 
 ```bash
 cd autoscaling_env
-python test_reactive_baselines.py --agent both --max-steps 30 --step-duration 20
+python test_reactive_baselines.py --agent both --steps 50 --step-duration 10 --horizon 10
 ```
 
 **Output**: Comparison plots and statistics for ReactiveAverage and ReactiveMaximum
@@ -172,13 +162,13 @@ See `baselines/README.md` for details.
 
 ### **ReactiveAverage**
 
-- Conservative scaling based on average processing time
-- Good for stable workloads
+- Horizon-based planning with average processing time (default horizon = step duration)
+- Safety factor configurable; suitable for stable workloads
 
 ### **ReactiveMaximum**
 
-- Aggressive scaling based on maximum processing time
-- Good for bursty workloads
+- Horizon-based planning with maximum processing time and safety margin
+- Faster to react to bursts while respecting QoS constraints
 
 ---
 

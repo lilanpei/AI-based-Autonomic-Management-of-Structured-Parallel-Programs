@@ -11,7 +11,7 @@ This project implements an **RL-based autoscaling system** for serverless parall
 ### **What It Does**
 
 - **Serverless Task Processing**: Producer-consumer workflow with OpenFaaS functions
-- **Dynamic Autoscaling**: RL agents learn optimal scaling policies (1-32 workers)
+- **Dynamic Autoscaling**: RL agents learn optimal scaling policies (1-32 workers) with single-step adjustments
 - **QoS-Aware**: Tracks deadline compliance and optimizes for QoS targets
 - **Baseline Comparison**: Reactive policies for benchmarking RL performance
 
@@ -37,20 +37,14 @@ AI-based-Autonomic-Management-of-Structured-Parallel-Programs/
 │   └── stack.yaml            # Deployment configuration
 │
 ├── autoscaling_env/          # RL environment and agents
-│   ├── openfaas_autoscaling_env.py  # Gym environment
-│   ├── baselines/            # Reactive baseline policies
-│   │   ├── reactive_policies.py  # ReactiveAverage, ReactiveMaximum
-│   │   └── README.md
-│   ├── rl/                   # RL agent implementations
-│   │   ├── sarsa_agent.py    # SARSA
-│   │   ├── train_sarsa.py    # Training script
-│   │   ├── test_sarsa.py     # Evaluation script
-│   │   └── README.md
-│   └── test_reactive_baselines.py  # Baseline testing
-│
-├── orchestrator/             # Workflow management
-│   ├── workflow_controller.py  # Deploy and monitor workflow
-│   └── worker_scaler.py        # Manual scaling utility
+│   ├── baselines/                     # Reactive baseline policies
+│   │   ├── reactive_policies.py       # ReactiveAverage, ReactiveMaximum
+│   │   ├── test_reactive_baselines.py # Baseline testing (with optional horizon tuning)
+│   │   ├── plots/                     # Performance plots
+│   │   ├── logs/                      # Log files
+│   │   └── README.md                  # Baseline documentation
+│   ├── rl/                            # RL agents and training
+│   └── openfaas_autoscaling_env.py    # Gym environment
 │
 └── utilities/                # Shared utilities
     ├── utilities.py          # Deployment, scaling, monitoring
@@ -78,7 +72,7 @@ RL Agent observes: [input_q, worker_q, result_q, output_q, workers,
 ```
 1. Observe: 9D state [input_q, worker_q, result_q, output_q, workers,
                       avg_time, max_time, arrival_rate, qos_rate]
-2. Decide: SARSA agent selects action {-2, -1, 0, +1, +2}
+2. Decide: SARSA agent selects action {-1, 0, +1}
 3. Act: Scale workers up/down via Kubernetes API
 4. Reward: Based on QoS, queue length, worker cost, scaling penalty
 5. Learn: Update Q-table using SARSA (on-policy TD control)
@@ -106,7 +100,7 @@ faas-cli up -f stack.yaml
 
 ```bash
 cd autoscaling_env
-python test_reactive_baselines.py --agent both --max-steps 30 --step-duration 20
+python test_reactive_baselines.py --agent both --steps 50 --step-duration 10 --horizon 10
 ```
 
 ### **3. Train SARSA Agent**
@@ -142,8 +136,8 @@ python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
 **Gym-compatible interface** for training autoscaling policies:
 
 - **Observation**: 9D vector [input_q, worker_q, result_q, output_q, workers, avg_time, max_time, arrival_rate, qos_rate]
-- **Action**: 5 discrete actions (-2, -1, 0, +1, +2 workers)
-- **Reward**: Multi-objective (QoS reward, queue penalty, worker cost, scaling penalty)
+- **Action**: 3 discrete actions (-1, 0, +1 workers)
+- **Reward**: Configurable blend of QoS delta, normalized queue penalty, worker/idle cost, and scaling penalty (see `utilities/configuration.yml`)
 - **Episode Termination**: Task-driven (ends when all tasks complete or max steps reached)
 
 ### **3. SARSA**
@@ -154,8 +148,8 @@ python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
 
 ### **4. Baseline Policies**
 
-- **ReactiveAverage**: Conservative, stable
-- **ReactiveMaximum**: Aggressive, responsive
+- **ReactiveAverage**: Conservative, horizon-based planning with average processing time
+- **ReactiveMaximum**: Safety-focused, horizon-based planning with max processing time and safety factor
 
 ### **5. QoS Tracking**
 
@@ -175,8 +169,8 @@ python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
 | Method          | QoS Rate | Avg Workers | Training Time | Complexity |
 |-----------------|----------|-------------|---------------|------------|
 | **SARSA**       |          |             |               | Medium     |
-| ReactiveAverage | 49.96%   | 9.54        | 0 (no train)  | Low        |
-| ReactiveMaximum | 40.14%   | 12.18       | 0 (no train)  | Low        |
+| ReactiveAverage |          |             | 0 (no train)  | Low        |
+| ReactiveMaximum |          |             | 0 (no train)  | Low        |
 
 **Expected:SARSA achieves better QoS than baselines through learning!**
 
@@ -219,9 +213,10 @@ python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
 
 Key parameters in `utilities/configuration.yml`:
 
-- **Workload**: `base_rate` (300 tasks/min), `phase_duration` (dynamically calculated)
+- **Workload**: `base_rate` (300 tasks/min), `phase_duration`, `number_of_phases`
 - **Scaling**: `min_workers` (1), `max_workers` (32), `initial_workers` (3)
-- **Environment**: `observation_window` (10s), `step_duration` (20s total time including scaling and observation)
+- **Environment**: `observation_window` (10s), `step_duration` (10s by default across scaling + observation), optional reactive `horizon`
+- **Reward**: `reward` block with QoS target, queue target, idle threshold, and per-term weights
 - **QoS**: Task deadlines based on calibrated processing time model (DEADLINE_COEFFICIENT = 2.0)
 - **SARSA**: `learning_rate` (0.1), `gamma` (0.99), `epsilon_decay` (0.995)
 
@@ -275,7 +270,7 @@ redis-cli LLEN worker_queue
 ### **Training Issues**
 
 - **QoS stays low**: Increase observation window, adjust reward weights
-- **Continuous scale-up**: Check arrival rate calculation
+- **Continuous scale-up**: Revisit reward queue weight and reactive horizon settings
 - **Training too slow**: Reduce steps/episode, reduce step duration
 
 ---

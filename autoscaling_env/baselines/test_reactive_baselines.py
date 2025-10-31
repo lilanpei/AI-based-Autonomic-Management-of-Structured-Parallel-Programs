@@ -19,14 +19,44 @@ import numpy as np
 import time
 import matplotlib.pyplot as plt
 from datetime import datetime
+from pathlib import Path
 
 # Add project root to path
 current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)
-sys.path.append(project_root)
+baselines_dir = current_dir  # We're in baselines/
+autoscaling_env_dir = os.path.dirname(baselines_dir)  # Go up to autoscaling_env/
+project_root = os.path.dirname(autoscaling_env_dir)  # Go up to project root
+sys.path.insert(0, project_root)
 
 from autoscaling_env.openfaas_autoscaling_env import OpenFaaSAutoscalingEnv
 from autoscaling_env.baselines.reactive_policies import ReactiveAverage, ReactiveMaximum
+
+
+LOG_DIR = Path(current_dir) / "logs"
+
+
+class Tee:
+    """Duplicate writes to multiple streams (e.g., stdout and a log file)."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for stream in self.streams:
+            stream.write(data)
+        return len(data)
+
+    def flush(self):
+        for stream in self.streams:
+            stream.flush()
+
+    @property
+    def encoding(self):
+        primary = self.streams[0] if self.streams else None
+        return getattr(primary, "encoding", "utf-8")
+
+    def isatty(self):
+        return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
 
 
 def test_single_agent(agent_name, agent, env, num_steps=20):
@@ -65,7 +95,7 @@ def test_single_agent(agent_name, agent, env, num_steps=20):
     for step in range(num_steps):
         # Select action
         action = agent.select_action(state, training=False)
-        action_map = {0: "-2", 1: "-1", 2: "0", 3: "+1", 4: "+2"}
+        action_map = {0: "-1", 1: "0", 2: "+1"}
 
         # Execute action
         next_state, reward, done, info = env.step(action)
@@ -84,9 +114,11 @@ def test_single_agent(agent_name, agent, env, num_steps=20):
         queue_length = next_state[1]  # worker_queue
         workers = next_state[4]
         qos_rate = next_state[8]
+        scaling_time = info['scaling_time']
+        step_duration = info['step_duration']
 
-        print(f"{'Step':<6} {'Action':<8} {'Input_Q':<8} {'Worker_Q':<8} {'Result_Q':<8} {'Output_Q':<8} {'Workers':<8} {'QoS':<8} {'AVG_T':<8} {'MAX_T':<8} {'ARR.':<8} {'Reward':<10}")
-        print(f"{step+1:<6} {action_map[action]:<8} {next_state[0]:<8.0f} {queue_length:<8.0f} {next_state[2]:<8.0f} {next_state[3]:<8.0f} {workers:<8.0f} {qos_rate:<8.2%} {avg_times[-1]:<8.2f} {max_times[-1]:<8.2f} {arrival_rates[-1]:<8.2f} {reward:<10.2f}")
+        print(f"{'Step':<6} {'Action':<8} {'Scale_T':<8} {'Step_D':<8} {'Input_Q':<8} {'Worker_Q':<8} {'Result_Q':<8} {'Output_Q':<8} {'Workers':<8} {'QoS':<8} {'AVG_T':<8} {'MAX_T':<8} {'ARR.':<8} {'Reward':<10}")
+        print(f"{step+1:<6} {action_map[action]:<8} {f'{scaling_time:.2f}s':<8} {f'{step_duration:.2f}s':<8} {next_state[0]:<8.0f} {queue_length:<8.0f} {next_state[2]:<8.0f} {next_state[3]:<8.0f} {workers:<8.0f} {qos_rate:<8.2%} {f'{avg_times[-1]:.2f}s':<8} {f'{max_times[-1]:.2f}s':<8} {f'{arrival_rates[-1]:.2f}s':<8} {reward:<10.2f}")
 
         # Update state
         state = next_state
@@ -103,8 +135,8 @@ def test_single_agent(agent_name, agent, env, num_steps=20):
     print(f"Mean Reward:        {np.mean(rewards):.2f} ± {np.std(rewards):.2f}")
     print(f"Mean QoS Rate:      {np.mean(qos_rates):.2%}")
     print(f"Mean Workers:       {np.mean(worker_counts):.1f}")
-    print(f"Scaling Actions:    {sum(1 for a in actions_taken if a != 2)}")
-    print(f"No-op Actions:      {sum(1 for a in actions_taken if a == 2)}")
+    print(f"Scaling Actions:    {sum(1 for a in actions_taken if a != 1)}")
+    print(f"No-op Actions:      {sum(1 for a in actions_taken if a == 1)}")
     print("="*70 + "\n")
 
     return {
@@ -115,7 +147,9 @@ def test_single_agent(agent_name, agent, env, num_steps=20):
         'queue_lengths': queue_lengths,
         'avg_times': avg_times,
         'max_times': max_times,
-        'arrival_rates': arrival_rates
+        'arrival_rates': arrival_rates,
+        'scaling_time': scaling_time,
+        'step_duration': step_duration
     }
 
 
@@ -315,13 +349,14 @@ def plot_comparison(results_dict, save_dir='plots'):
     plt.close()
 
 
-def compare_agents(env, num_steps=20):
+def compare_agents(env, num_steps=20, planning_horizon=None):
     """
     Compare both reactive baseline agents
 
     Args:
         env: Environment instance
         num_steps: Number of steps to run
+        planning_horizon: Optional planning horizon to configure policies
     """
     print("\n" + "="*70)
     print("COMPARING REACTIVE BASELINES")
@@ -332,6 +367,11 @@ def compare_agents(env, num_steps=20):
         'ReactiveAverage': ReactiveAverage(),
         'ReactiveMaximum': ReactiveMaximum()
     }
+
+    if planning_horizon and planning_horizon > 0:
+        for agent in agents.values():
+            if hasattr(agent, 'set_horizon'):
+                agent.set_horizon(planning_horizon)
 
     # Test each agent
     results = {}
@@ -350,7 +390,7 @@ def compare_agents(env, num_steps=20):
         ('Mean Reward', lambda r: np.mean(r['rewards'])),
         ('Mean QoS Rate', lambda r: np.mean(r['qos_rates'])),
         ('Mean Workers', lambda r: np.mean(r['worker_counts'])),
-        ('Scaling Actions', lambda r: sum(1 for a in r['actions'] if a != 2))
+        ('Scaling Actions', lambda r: sum(1 for a in r['actions'] if a != 1))
     ]
 
     for metric_name, metric_fn in metrics:
@@ -395,80 +435,114 @@ def main():
     parser = argparse.ArgumentParser(description='Test reactive baseline policies')
     parser.add_argument('--agent', choices=['average', 'maximum', 'both'], default='both',
                         help='Which agent to test')
-    parser.add_argument('--steps', type=int, default=30,
+    parser.add_argument('--steps', type=int, default=50,
                         help='Maximum number of steps (episode ends early if all tasks complete)')
+    parser.add_argument('--initial-workers', type=int, default=1,
+                        help='Initial number of workers')
     parser.add_argument('--max-workers', type=int, default=32,
                         help='Maximum number of workers')
-    parser.add_argument('--step-duration', type=int, default=20,
+    parser.add_argument('--step-duration', type=int, default=10,
                         help='Total step duration in seconds (includes scaling 10~17s)')
+    parser.add_argument('--horizon', type=float, default=None,
+                        help='Planning horizon in seconds for reactive policies (defaults to step-duration)')
 
     args = parser.parse_args()
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    log_file = None
 
-    print("\n" + "="*70)
-    print("REACTIVE BASELINE TEST")
-    print("="*70)
-    print(f"Agent:         {args.agent}")
-    print(f"Steps:         {args.steps}")
-    print(f"Max Workers:   {args.max_workers}")
-    print(f"Step Duration: {args.step_duration}s")
-    print("="*70)
-
-    # Initialize environment
-    print("\n[SETUP] Initializing environment...")
-    print("[INFO] This will deploy emitter, collector, and initial workers...")
-    print("[INFO] This may take 1-2 minutes on first run...")
     try:
-        env = OpenFaaSAutoscalingEnv(
-            max_workers=args.max_workers,
-            min_workers=1,
-            observation_window=10,
-            step_duration=args.step_duration,
-            max_steps=args.steps,
-            initial_workers=1,
-            initialize_workflow=True  # Deploy emitter/collector/workers
-        )
-        print("✓ Environment initialized successfully")
-    except Exception as e:
-        print(f"✗ Failed to initialize environment: {e}")
-        print("\nPlease ensure:")
-        print("  1. Kubernetes cluster is running")
-        print("  2. Redis is accessible")
-        print("  3. OpenFaaS is deployed")
-        print("  4. OpenFaaS gateway is accessible (port 8080)")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_filename = f"reactive_baseline_{args.agent}_{timestamp}.log"
+        log_path = LOG_DIR / log_filename
 
-    # Run tests
-    try:
-        if args.agent == 'both':
-            compare_agents(env, args.steps)
-        else:
-            if args.agent == 'average':
-                agent = ReactiveAverage()
-                agent_name = 'ReactiveAverage'
-            else:  # maximum
-                agent = ReactiveMaximum()
-                agent_name = 'ReactiveMaximum'
+        log_file = open(log_path, "w", encoding="utf-8")
+        sys.stdout = Tee(original_stdout, log_file)
+        sys.stderr = Tee(original_stderr, log_file)
 
-            results = test_single_agent(agent_name, agent, env, args.steps)
+        print(f"[LOG] Console output is being saved to {log_path}")
+        print("\n" + "="*70)
+        print("REACTIVE BASELINE TEST")
+        print("="*70)
+        planning_horizon = args.horizon if args.horizon and args.horizon > 0 else args.step_duration
 
-            # Generate plot for single agent
-            print("\n[PLOTTING] Generating visualization...")
-            plot_results(results, agent_name)
-            print("✓ Plot generated\n")
+        print(f"Agent:         {args.agent}")
+        print(f"Steps:         {args.steps}")
+        print(f"Initial Workers: {args.initial_workers}")
+        print(f"Max Workers:   {args.max_workers}")
+        print(f"Step Duration: {args.step_duration}s")
+        print(f"Planning Horizon: {planning_horizon}s")
+        print("="*70)
 
-    except KeyboardInterrupt:
-        print("\n\n[INFO] Test interrupted by user")
-    except Exception as e:
-        print(f"\n[ERROR] Test failed: {e}")
-        import traceback
-        traceback.print_exc()
+        # Initialize environment
+        env = None
+        print("\n[SETUP] Initializing environment...")
+        print("[INFO] This will deploy emitter, collector, and initial workers...")
+        print("[INFO] This may take 1-2 minutes on first run...")
+        try:
+            env = OpenFaaSAutoscalingEnv(
+                max_workers=args.max_workers,
+                min_workers=1,
+                observation_window=args.step_duration,
+                step_duration=args.step_duration,
+                max_steps=args.steps,
+                initial_workers=args.initial_workers,
+                initialize_workflow=True  # Deploy emitter/collector/workers
+            )
+            print("✓ Environment initialized successfully")
+        except Exception as e:
+            print(f"✗ Failed to initialize environment: {e}")
+            print("\nPlease ensure:")
+            print("  1. Kubernetes cluster is running")
+            print("  2. Redis is accessible")
+            print("  3. OpenFaaS is deployed")
+            print("  4. OpenFaaS gateway is accessible (port 8080)")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+
+        # Run tests
+        try:
+            if args.agent == 'both':
+                compare_agents(env, args.steps, planning_horizon)
+            else:
+                if args.agent == 'average':
+                    agent = ReactiveAverage()
+                    agent_name = 'ReactiveAverage'
+                else:  # maximum
+                    agent = ReactiveMaximum()
+                    agent_name = 'ReactiveMaximum'
+
+                if hasattr(agent, 'set_horizon'):
+                    agent.set_horizon(planning_horizon)
+
+                results = test_single_agent(agent_name, agent, env, args.steps)
+
+                # Generate plot for single agent
+                print("\n[PLOTTING] Generating visualization...")
+                plot_results(results, agent_name)
+                print("✓ Plot generated\n")
+
+        except KeyboardInterrupt:
+            print("\n\n[INFO] Test interrupted by user")
+        except Exception as e:
+            print(f"\n[ERROR] Test failed: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # Clean up
+            if env is not None:
+                print("\n[CLEANUP] Closing environment...")
+                env.close()
+                print("✓ Done\n")
+
     finally:
-        # Clean up
-        print("\n[CLEANUP] Closing environment...")
-        env.close()
-        print("✓ Done\n")
+        if log_file is not None:
+            log_file.flush()
+            log_file.close()
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
 
 
 if __name__ == "__main__":

@@ -14,10 +14,14 @@ from threading import Thread
 from datetime import datetime, timezone
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
-from utilities.logger import get_logger
+from utilities.logger import get_logger, bind_logger_to_print
 
 # Module-level cache for configuration
 _config = None
+
+
+logger = get_logger(__name__)
+print = bind_logger_to_print(logger)
 
 def get_config():
     """Load configuration from configuration.yml once."""
@@ -689,6 +693,9 @@ def deploy_function_instance(function_name, image, max_retries=3, delay=1):
         max_retries (int): Maximum retry attempts.
         delay (int): Delay (seconds) between attempts, with exponential backoff.
     """
+    configuration = get_config()
+    log_level = str(configuration.get("skeleton_log_level", "INFO")).upper()
+
     cmd = [
         "deploy",
         "--name", function_name,
@@ -698,9 +705,10 @@ def deploy_function_instance(function_name, image, max_retries=3, delay=1):
         "--env", "exec_timeout=12h",
         "--env", "redis_hostname=redis-master.redis.svc.cluster.local",
         "--env", "redis_port=6379",
+        "--env", f"LOG_LEVEL={log_level}",
         "--annotation", "com.openfaas.scale.min=1",
         "--annotation", "com.openfaas.retry.attempts=0",
-        "--lang", "python3-http-skeleton"
+        "--lang", "python3-http-skeleton",
     ]
 
     for attempt in range(1, max_retries + 1):
