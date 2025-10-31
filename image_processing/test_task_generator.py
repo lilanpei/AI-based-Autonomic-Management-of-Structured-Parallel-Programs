@@ -1,282 +1,280 @@
 #!/usr/bin/env python3
-"""
-Test Task Generator and Plot Arrival Rates
+"""Visualize task-generation phases defined in utilities/configuration.yml."""
 
-This script simulates the four-phase task generator and plots:
-- Task arrival rate over time
-- Phase boundaries
-- Expected vs actual rates
-"""
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+import argparse
 import sys
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.patches import Rectangle
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from utilities.utilities import get_config
 
 
-def get_phase_rate(phase, base_rate, time_in_phase, phase_duration):
-    """
-    Calculate task arrival rate for current phase and time
-    (Same logic as task_generator.py)
-    """
-    if phase == 1:
-        # Phase 1: Steady Low Load (30% of base rate)
-        return base_rate * 0.3
+def compute_phase_rate(phase_cfg, base_rate, time_in_phase):
+    """Compute arrival rate for a single phase definition."""
+    pattern = (phase_cfg.get("phase_pattern") or "steady").lower()
+    multiplier = float(phase_cfg.get("phase_multiplier", 1.0))
 
-    elif phase == 2:
-        # Phase 2: Steady High Load (150% of base rate)
-        return base_rate * 1.5
+    if pattern == "steady":
+        return base_rate * multiplier
 
-    elif phase == 3:
-        # Phase 3: Slow Oscillation (period = phase_duration)
-        # Oscillates between 50% and 150% of base rate
-        progress = time_in_phase / phase_duration  # 0 to 1
-        oscillation = 0.5 * np.sin(2 * np.pi * progress) + 1.0  # 0.5 to 1.5
+    if pattern.startswith("oscillation"):
+        duration = max(float(phase_cfg.get("phase_duration", 60)), 1e-6)
+        progress = (time_in_phase / duration) % 1.0
+        min_multiplier = float(phase_cfg.get("oscillation_min", multiplier))
+        max_multiplier = float(phase_cfg.get("oscillation_max", multiplier))
+        cycles = float(phase_cfg.get("oscillation_cycles", 1.0))
+
+        midpoint = (max_multiplier + min_multiplier) / 2.0
+        amplitude = (max_multiplier - min_multiplier) / 2.0
+        oscillation = midpoint + amplitude * np.sin(2 * np.pi * cycles * progress)
         return base_rate * oscillation
 
-    elif phase == 4:
-        # Phase 4: Fast Oscillation (4 cycles per phase)
-        # Oscillates between 30% and 170% of base rate
-        progress = time_in_phase / phase_duration  # 0 to 1
-        oscillation = 0.7 * np.sin(8 * np.pi * progress) + 1.0  # 0.3 to 1.7
-        return base_rate * oscillation
-
-    else:
-        return base_rate
+    return base_rate * multiplier
 
 
-def simulate_arrival_rates(base_rate, phase_duration, window_duration):
-    """
-    Simulate arrival rates for all four phases
-
-    Returns:
-        times: Array of time points
-        rates: Array of arrival rates
-        phases: Array of phase numbers
-        phase_boundaries: List of phase boundary times
-    """
-    total_duration = phase_duration * 4
-    num_windows = int(total_duration / window_duration)
-
+def simulate_arrival_rates(base_rate, phase_definitions):
+    """Simulate arrival rates across all configured phases."""
     times = []
     rates = []
-    phases = []
+    phase_indices = []
+    window_sizes = []
+    phase_names = []
+    phase_boundaries = [0.0]
 
-    for window in range(num_windows):
-        current_time = window * window_duration
+    current_time = 0.0
+    for idx, phase_cfg in enumerate(phase_definitions, start=1):
+        duration = float(phase_cfg.get("phase_duration", 60))
+        window = float(phase_cfg.get("window_duration", 1))
+        if window <= 0:
+            window = 1.0
 
-        # Determine current phase
-        if current_time < phase_duration:
-            phase = 1
-            time_in_phase = current_time
-        elif current_time < phase_duration * 2:
-            phase = 2
-            time_in_phase = current_time - phase_duration
-        elif current_time < phase_duration * 3:
-            phase = 3
-            time_in_phase = current_time - phase_duration * 2
-        else:
-            phase = 4
-            time_in_phase = current_time - phase_duration * 3
+        phase_names.append(phase_cfg.get("phase_name", f"Phase {idx}"))
 
-        # Calculate rate
-        rate = get_phase_rate(phase, base_rate, time_in_phase, phase_duration)
-        
-        times.append(current_time)
-        rates.append(rate)
-        phases.append(phase)
+        phase_time = 0.0
+        while phase_time < duration - 1e-9:
+            next_phase_time = min(phase_time + window, duration)
+            effective_window = next_phase_time - phase_time
 
-    phase_boundaries = [0, phase_duration, phase_duration*2, phase_duration*3, phase_duration*4]
+            rate = compute_phase_rate(phase_cfg, base_rate, phase_time)
 
-    return np.array(times), np.array(rates), np.array(phases), phase_boundaries
+            times.append(current_time + phase_time)
+            rates.append(rate)
+            phase_indices.append(idx)
+            window_sizes.append(effective_window)
 
+            phase_time = next_phase_time
 
-def plot_arrival_rates(base_rate, phase_duration, window_duration, output_file='task_arrival_rates.png'):
-    """
-    Plot arrival rates for all four phases
-    """
-    # Simulate rates
-    times, rates, phases, phase_boundaries = simulate_arrival_rates(
-        base_rate, phase_duration, window_duration
+        current_time += duration
+        phase_boundaries.append(current_time)
+
+    return (
+        np.array(times, dtype=float),
+        np.array(rates, dtype=float),
+        np.array(phase_indices, dtype=int),
+        np.array(window_sizes, dtype=float),
+        phase_boundaries,
+        phase_names,
     )
 
-    # Create figure with two subplots
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
 
-    # Plot 1: Arrival Rate Over Time
+def plot_arrival_rates(sim_results, phase_definitions, base_rate, output_file="task_arrival_rates.png"):
+    """Render arrival rate plot based on simulated results."""
+    (
+        times,
+        rates,
+        phase_indices,
+        window_sizes,
+        phase_boundaries,
+        phase_names,
+    ) = sim_results
 
-    # Plot rate line
-    ax1.plot(times / 60, rates, 'b-', linewidth=2, label='Arrival Rate')
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={"height_ratios": [3, 2]})
+    fig.subplots_adjust(hspace=0.35)
 
-    # Add phase backgrounds
-    colors = ['#e8f4f8', '#fff4e6', '#f0f8e8', '#fce8f0']
-    phase_names = ['Phase 1: Steady Low', 'Phase 2: Steady High', 
-                   'Phase 3: Slow Oscillation', 'Phase 4: Fast Oscillation']
+    # Plot arrival rate over time
+    (rate_line,) = ax1.plot(times / 60.0, rates, color="tab:blue", linewidth=2, label="Arrival Rate")
 
-    for i in range(4):
-        start = phase_boundaries[i] / 60
-        end = phase_boundaries[i+1] / 60
-        ax1.axvspan(start, end, alpha=0.2, color=colors[i], label=phase_names[i])
+    cmap = plt.colormaps["tab20"].resampled(len(phase_names))
+    colors = [cmap(i) for i in range(len(phase_names))]
 
-    # Add phase boundary lines
+    phase_handles = []
+    for i, (start, end) in enumerate(zip(phase_boundaries[:-1], phase_boundaries[1:])):
+        ax1.axvspan(start / 60.0, end / 60.0, alpha=0.18, color=colors[i])
+        phase_handles.append(Rectangle((0, 0), 1, 1, facecolor=colors[i], alpha=0.3))
+
     for boundary in phase_boundaries[1:-1]:
-        ax1.axvline(boundary / 60, color='gray', linestyle='--', linewidth=1, alpha=0.5)
+        ax1.axvline(boundary / 60.0, color="gray", linestyle="--", linewidth=1, alpha=0.5)
 
-    # Add reference lines
-    ax1.axhline(base_rate, color='green', linestyle=':', linewidth=1, alpha=0.7, label=f'Base Rate ({base_rate} tasks/min)')
-    ax1.axhline(base_rate * 0.3, color='red', linestyle=':', linewidth=1, alpha=0.5)
-    ax1.axhline(base_rate * 1.5, color='red', linestyle=':', linewidth=1, alpha=0.5)
+    base_line = ax1.axhline(
+        base_rate,
+        color="tab:green",
+        linestyle=":",
+        linewidth=1.2,
+        alpha=0.8,
+        label=f"Base Rate ({base_rate:.0f} tasks/min)",
+    )
 
-    ax1.set_xlabel('Time (minutes)', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('Arrival Rate (tasks/min)', fontsize=12, fontweight='bold')
-    ax1.set_title(f'Four-Phase Task Arrival Pattern (Base Rate: {base_rate} tasks/min)', 
-                  fontsize=14, fontweight='bold')
+    max_rate = max(rates.max(), base_rate) * 1.2
+    ax1.set_xlabel("Time (minutes)", fontsize=12, fontweight="bold")
+    ax1.set_ylabel("Arrival Rate (tasks/min)", fontsize=12, fontweight="bold")
+    ax1.set_title(
+        "Configured Task Arrival Pattern",
+        fontsize=14,
+        fontweight="bold",
+    )
     ax1.grid(True, alpha=0.3)
-    ax1.legend(loc='best', fontsize=9)
-    ax1.set_xlim(0, phase_boundaries[-1] / 60)
-    ax1.set_ylim(0, base_rate * 1.8)
+    ax1.set_xlim(0, phase_boundaries[-1] / 60.0)
+    ax1.set_ylim(0, max_rate)
 
-    # Plot 2: Rate Distribution by Phase
+    legend_handles = [rate_line, base_line] + phase_handles
+    legend_labels = ["Arrival Rate", f"Base Rate ({base_rate:.0f} tasks/min)"] + phase_names
+    ax1.legend(legend_handles, legend_labels, loc="best", fontsize=9)
 
+    # Rate distribution by phase
     phase_data = []
     phase_labels = []
+    for idx, phase_cfg in enumerate(phase_definitions, start=1):
+        mask = phase_indices == idx
+        phase_rates = rates[mask]
+        if phase_rates.size == 0:
+            phase_data.append(np.array([0.0]))
+            phase_labels.append(f"{phase_names[idx-1]}\n(no samples)")
+            continue
 
-    for phase_num in range(1, 5):
-        phase_mask = phases == phase_num
-        phase_rates = rates[phase_mask]
+        mean_rate = np.average(phase_rates, weights=window_sizes[mask])
+        min_rate = phase_rates.min()
+        max_rate_phase = phase_rates.max()
         phase_data.append(phase_rates)
+        phase_labels.append(
+            f"{phase_names[idx-1]}\n({min_rate:.1f}–{max_rate_phase:.1f})\nμ={mean_rate:.1f}"
+        )
 
-        mean_rate = np.mean(phase_rates)
-        min_rate = np.min(phase_rates)
-        max_rate = np.max(phase_rates)
+    box = ax2.boxplot(
+        phase_data,
+        tick_labels=phase_labels,
+        patch_artist=True,
+        widths=0.6,
+        showmeans=True,
+    )
 
-        phase_labels.append(f'Phase {phase_num}\n({min_rate:.1f}-{max_rate:.1f})\nμ={mean_rate:.1f}')
-
-    # Box plot
-    bp = ax2.boxplot(phase_data, labels=phase_labels, patch_artist=True,
-                     widths=0.6, showmeans=True)
-
-    # Color boxes
-    for patch, color in zip(bp['boxes'], colors):
+    for patch, color in zip(box["boxes"], colors):
         patch.set_facecolor(color)
         patch.set_alpha(0.7)
 
-    # Add base rate reference
-    ax2.axhline(base_rate, color='green', linestyle=':', linewidth=2, alpha=0.7, 
-                label=f'Base Rate ({base_rate} tasks/min)')
-    
-    ax2.set_xlabel('Phase', fontsize=12, fontweight='bold')
-    ax2.set_ylabel('Arrival Rate (tasks/min)', fontsize=12, fontweight='bold')
-    ax2.set_title('Rate Distribution by Phase', fontsize=14, fontweight='bold')
-    ax2.grid(True, alpha=0.3, axis='y')
-    ax2.legend(loc='upper right', fontsize=10)
+    ax2.axhline(base_rate, color="tab:green", linestyle=":", linewidth=1.2, alpha=0.8)
+    ax2.set_xlabel("Phase", fontsize=12, fontweight="bold")
+    ax2.set_ylabel("Arrival Rate (tasks/min)", fontsize=12, fontweight="bold")
+    ax2.set_title("Rate Distribution by Phase", fontsize=14, fontweight="bold")
+    ax2.grid(True, alpha=0.3, axis="y")
 
-    # Add statistics text
-
-    stats_text = f"""Configuration:
-Base Rate: {base_rate} tasks/min
-Phase Duration: {phase_duration}s ({phase_duration/60:.1f} min)
-Window Duration: {window_duration}s
-Total Duration: {phase_boundaries[-1]}s ({phase_boundaries[-1]/60:.1f} min)
-
-Phase Statistics:
-Phase 1: {np.mean(rates[phases==1]):.1f} tasks/min (steady)
-Phase 2: {np.mean(rates[phases==2]):.1f} tasks/min (steady)
-Phase 3: {np.mean(rates[phases==3]):.1f} tasks/min (slow osc)
-Phase 4: {np.mean(rates[phases==4]):.1f} tasks/min (fast osc)"""
-
-    fig.text(0.02, 0.02, stats_text, fontsize=9, family='monospace',
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
-
-    plt.tight_layout(rect=[0, 0.12, 1, 1])
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    fig.tight_layout()
+    plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"\n✅ Plot saved to: {output_file}")
 
     return fig
 
 
-def print_phase_summary(base_rate, phase_duration, window_duration):
-    """
-    Print summary statistics for each phase
-    """
-    times, rates, phases, phase_boundaries = simulate_arrival_rates(
-        base_rate, phase_duration, window_duration
-    )
+def print_phase_summary(sim_results, phase_definitions, base_rate):
+    """Print textual summary of configured phases."""
+    (
+        times,
+        rates,
+        phase_indices,
+        window_sizes,
+        phase_boundaries,
+        phase_names,
+    ) = sim_results
+
+    total_duration = phase_boundaries[-1]
 
     print(f"\n{'='*70}")
-    print(f"FOUR-PHASE ARRIVAL PATTERN SUMMARY")
+    print("TASK ARRIVAL PATTERN SUMMARY")
     print(f"{'='*70}")
-    print(f"Base Rate: {base_rate} tasks/min")
-    print(f"Phase Duration: {phase_duration}s ({phase_duration/60:.1f} min)")
-    print(f"Window Duration: {window_duration}s")
-    print(f"Total Duration: {phase_boundaries[-1]}s ({phase_boundaries[-1]/60:.1f} min)")
+    print(f"Base Rate: {base_rate:.0f} tasks/min")
+    print(f"Total Duration: {total_duration:.0f}s ({total_duration/60:.1f} min)")
     print(f"{'='*70}\n")
 
-    phase_names = [
-        "Steady Low Load",
-        "Steady High Load",
-        "Slow Oscillation",
-        "Fast Oscillation"
-    ]
+    for idx, phase_cfg in enumerate(phase_definitions, start=1):
+        mask = phase_indices == idx
+        phase_rates = rates[mask]
+        phase_windows = window_sizes[mask]
+        phase_start = phase_boundaries[idx - 1]
+        phase_end = phase_boundaries[idx]
 
-    for phase_num in range(1, 5):
-        phase_mask = phases == phase_num
-        phase_rates = rates[phase_mask]
+        if phase_rates.size == 0:
+            print(f"{phase_names[idx-1]}: No samples")
+            continue
 
-        print(f"Phase {phase_num}: {phase_names[phase_num-1]}")
-        print(f"  Time Range: {phase_boundaries[phase_num-1]:.0f}s - {phase_boundaries[phase_num]:.0f}s")
-        print(f"  Duration: {phase_duration}s ({phase_duration/60:.1f} min)")
-        print(f"  Rate Range: {np.min(phase_rates):.2f} - {np.max(phase_rates):.2f} tasks/min")
-        print(f"  Mean Rate: {np.mean(phase_rates):.2f} tasks/min")
-        print(f"  Std Dev: {np.std(phase_rates):.2f} tasks/min")
+        weighted_mean = np.average(phase_rates, weights=phase_windows)
+        weighted_std = np.sqrt(
+            np.average((phase_rates - weighted_mean) ** 2, weights=phase_windows)
+        )
+        estimated_tasks = np.sum(phase_rates * (phase_windows / 60.0))
 
-        # Estimate total tasks
-        total_tasks = np.sum(phase_rates) * (window_duration / 60)
-        print(f"  Estimated Tasks: ~{int(total_tasks)} tasks")
+        print(f"{phase_names[idx-1]} (Phase {idx})")
+        print(f"  Pattern: {phase_cfg.get('phase_pattern', 'steady')}")
+        print(f"  Duration: {phase_end - phase_start:.0f}s")
+        print(f"  Rate Range: {phase_rates.min():.2f} - {phase_rates.max():.2f} tasks/min")
+        print(f"  Mean Rate: {weighted_mean:.2f} tasks/min")
+        print(f"  Std Dev: {weighted_std:.2f} tasks/min")
+        print(f"  Estimated Tasks: ~{int(round(estimated_tasks))} tasks")
         print()
 
-    # Overall statistics
-    total_tasks_all = np.sum(rates) * (window_duration / 60)
-    avg_rate = np.mean(rates)
+    total_tasks = np.sum(rates * (window_sizes / 60.0))
+    avg_rate = total_tasks / (total_duration / 60.0)
 
     print(f"{'='*70}")
-    print(f"OVERALL STATISTICS")
+    print("OVERALL STATISTICS")
     print(f"{'='*70}")
-    print(f"Total Estimated Tasks: ~{int(total_tasks_all)} tasks")
+    print(f"Total Estimated Tasks: ~{int(round(total_tasks))} tasks")
     print(f"Average Rate: {avg_rate:.2f} tasks/min")
-    print(f"Min Rate: {np.min(rates):.2f} tasks/min")
-    print(f"Max Rate: {np.max(rates):.2f} tasks/min")
+    print(f"Min Rate: {rates.min():.2f} tasks/min")
+    print(f"Max Rate: {rates.max():.2f} tasks/min")
     print(f"{'='*70}\n")
 
 
 def main():
-    """Main test function"""
+    """Entry point for phase visualization."""
 
-    # Parse arguments
-    if len(sys.argv) == 4:
-        base_rate = int(sys.argv[1])
-        phase_duration = int(sys.argv[2])
-        window_duration = int(sys.argv[3])
-    else:
-        # Default values
-        print("Usage: python test_task_generator.py <base_rate> <phase_duration> <window_duration>")
-        print("Using default values: 300 60 1\n")
-        base_rate = 300
-        phase_duration = 60
-        window_duration = 1
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--base-rate",
+        type=float,
+        help="Override base rate (tasks/min) from configuration.yml",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="task_arrival_rates.png",
+        help="Output path for the generated plot",
+    )
+    args = parser.parse_args()
 
-    # Print summary
-    print_phase_summary(base_rate, phase_duration, window_duration)
+    config = get_config()
+    phase_definitions = config.get("phase_definitions")
+    if not phase_definitions:
+        raise ValueError("No phase_definitions found in utilities/configuration.yml")
 
-    # Generate plot
+    base_rate = float(args.base_rate) if args.base_rate is not None else float(config.get("base_rate", 300))
+
+    sim_results = simulate_arrival_rates(base_rate, phase_definitions)
+
+    print_phase_summary(sim_results, phase_definitions, base_rate)
     print("Generating plot...")
-    plot_arrival_rates(base_rate, phase_duration, window_duration)
+    plot_arrival_rates(sim_results, phase_definitions, base_rate, output_file=args.output)
 
     print("\n✅ Test complete!")
-    print("\nTo run with custom parameters:")
-    print("  python test_task_generator.py 300 60 1")
-    print("\nTo view the plot:")
-    print("  open task_arrival_rates.png")
+    print("\nRun with a different base rate:")
+    print("  python test_task_generator.py --base-rate 400")
+    print("Specify a custom output file:")
+    print("  python test_task_generator.py --output plots/custom_rates.png")
 
 
 if __name__ == "__main__":
