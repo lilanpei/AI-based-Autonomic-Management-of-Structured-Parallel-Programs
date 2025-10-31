@@ -5,6 +5,7 @@ import sys
 import time
 import uuid
 import random
+import math
 import numpy as np
 import logging
 from datetime import datetime, timezone
@@ -269,14 +270,11 @@ TASK_TYPES = {
     "image_processing": {
         "name": "image_processing",
         "description": "Complete image processing pipeline (all 4 stages)",
-        # Expected durations from calibration (complete pipeline)
-        "duration_512": 45,      # ms for 512x512
-        "duration_1024": 175,    # ms for 1024x1024
-        "duration_2048": 708,    # ms for 2048x2048
-        "duration_4096": 2790,   # ms for 4096x4096
-        # Image size distribution - shifted to larger sizes for ~2s avg processing time
-        "image_sizes": [512, 1024, 2048, 4096],
-        "size_weights": [0.05, 0.15, 0.40, 0.40]  # Favor 2048 and 4096 (avg ~2s)
+        # Image size sampling parameters (derived from calibrated model)
+        "min_image_size": 512,
+        "max_image_size": 4096,
+        "target_mean_processing_time": 1.5,  # seconds
+        "processing_time_shape": 4.0  # Gamma shape for sampling variability
     }
 }
 
@@ -310,45 +308,57 @@ def generate_task_for_generation(program_start_time, calibrated_model_a=None, ca
     task_config = TASK_TYPES["image_processing"]
     priority = "normal"
 
-    # Select image size based on distribution
-    image_size = random.choices(
-        task_config["image_sizes"],
-        weights=task_config["size_weights"]
-    )[0]
+    if calibrated_model_a is None or calibrated_model_b is None:
+        logger.error("Calibrated model not provided")
+        raise ValueError("Calibrated model not provided")
 
-    # Get expected duration from calibration data (predefined values)
-    duration_map = {
-        512: task_config["duration_512"],
-        1024: task_config["duration_1024"],
-        2048: task_config["duration_2048"],
-        4096: task_config["duration_4096"]
-    }
-    expected_duration = duration_map[image_size] / 1000  # Convert to seconds
+    # Sample processing time from a gamma distribution centered on the target mean
+    target_mean = task_config.get("target_mean_processing_time", 1.5)
+    shape = task_config.get("processing_time_shape", 4.0)
+    scale = target_mean / shape if shape > 0 else target_mean
+
+    min_size = task_config.get("min_image_size", 512)
+    max_size = task_config.get("max_image_size", 4096)
+    min_time = calibrated_model_a * (min_size ** 2) + calibrated_model_b
+    max_time = calibrated_model_a * (max_size ** 2) + calibrated_model_b
+
+    processing_time_sampled = 0.0
+    for _ in range(5):
+        candidate = random.gammavariate(shape, scale)
+        if candidate > calibrated_model_b:
+            processing_time_sampled = candidate
+            break
+    if processing_time_sampled <= calibrated_model_b:
+        processing_time_sampled = target_mean
+
+    # Clip sampled processing time to calibrated range
+    processing_time_sampled = max(min_time, min(processing_time_sampled, max_time))
+
+    # Invert calibrated model to derive image size from processing time
+    denom = max(calibrated_model_a, 1e-12)
+    size_continuous = math.sqrt(max((processing_time_sampled - calibrated_model_b) / denom, 0.0))
+    image_size = int(max(min_size, min(size_continuous, max_size)))
+
+    # Recompute processing time based on rounded image size
+    processing_time_simulated = calibrated_model_a * (image_size ** 2) + calibrated_model_b
+    processing_time_simulated = max(0.001, processing_time_simulated)
 
     # Get current UTC time
     task_gen_timestamp = (get_utc_now() - program_start_time).total_seconds()
-    
-    # Calculate simulated processing time using calibrated model (if provided)
-    if calibrated_model_a is not None and calibrated_model_b is not None:
-        # Use QUADRATIC calibrated model: processing_time = a * size² + b (already in seconds)
-        processing_time_simulated = calibrated_model_a * (image_size ** 2) + calibrated_model_b
-        # Ensure non-negative
-        processing_time_simulated = max(0.001, processing_time_simulated)  # Minimum 1ms
+    logger.debug(
+        "Calibrated model sample: size=%d, sampled_time=%.3fs, recomputed_time=%.3fs",
+        image_size,
+        processing_time_sampled,
+        processing_time_simulated,
+    )
 
-        # Use calibrated model for deadline calculation (more accurate)
-        deadline_base = processing_time_simulated
-        logger.debug(f"Calibrated model: size={image_size}, time={processing_time_simulated:.3f}s")
-    else:
-        # Fallback: use expected duration
-        processing_time_simulated = expected_duration
-        deadline_base = expected_duration
-        logger.debug(f"Expected duration: size={image_size}, time={processing_time_simulated:.3f}s")
-    
     # Calculate deadline using QoS model (based on calibrated or expected duration)
-    deadline = calculate_task_deadline(deadline_base)
+    deadline = calculate_task_deadline(processing_time_simulated)
 
     # Final validation: ensure processing time is positive
     processing_time_simulated = max(0.001, processing_time_simulated)
+
+    expected_duration = processing_time_simulated
 
     return {
         "task_id": str(uuid.uuid4()),
@@ -365,48 +375,33 @@ def generate_task_for_generation(program_start_time, calibrated_model_a=None, ca
     }
 
 
-def get_phase_rate(phase, base_rate, time_in_phase, phase_duration):
+def get_phase_rate(phase_config_data, time_in_phase):
     """Calculate task arrival rate for current phase and time"""
-    if phase == 1:
-        # Phase 1: Steady Low Load (30% of base rate)
-        return base_rate * 0.3
+    phase_pattern = phase_config_data.get("phase_pattern")
+    base_rate = phase_config_data.get("base_rate")
+    phase_duration = phase_config_data.get("phase_duration")
+    phase_multiplier = phase_config_data.get("phase_multiplier")
 
-    elif phase == 2:
-        # Phase 2: Steady High Load (150% of base rate)
-        return base_rate * 1.5
+    if phase_pattern.startswith("oscillation"):
+        oscillation_min = phase_config_data.get("oscillation_min")
+        oscillation_max = phase_config_data.get("oscillation_max")
+        oscillation_cycles = phase_config_data.get("oscillation_cycles")
 
-    elif phase == 3:
-        # Phase 3: Slow Oscillation (period = phase_duration)
-        # Oscillates between 50% and 150% of base rate
+    if phase_pattern == "steady":
+        # Phase: Steady Low/High Load (phase_multiplier of base rate)
+        return base_rate * phase_multiplier
+
+    elif phase_pattern == "oscillation":
+        # Phase: Slow(1 cycle per phase)/Fast(4 cycles per phase) Oscillation
+        # Oscillates between oscillation_min and oscillation_max of base rate
         progress = time_in_phase / phase_duration  # 0 to 1
-        oscillation = 0.5 * np.sin(2 * np.pi * progress) + 1.0  # 0.5 to 1.5
-        return base_rate * oscillation
-
-    elif phase == 4:
-        # Phase 4: Fast Oscillation (4 cycles per phase)
-        # Oscillates between 30% and 170% of base rate
-        progress = time_in_phase / phase_duration  # 0 to 1
-        oscillation = 0.7 * np.sin(8 * np.pi * progress) + 1.0  # 0.3 to 1.7
+        amplitude = (oscillation_max - oscillation_min) / 2.0
+        midpoint = (oscillation_max + oscillation_min) / 2.0
+        oscillation = amplitude * np.sin(2 * np.pi * oscillation_cycles * progress) + midpoint
         return base_rate * oscillation
 
     else:
         return base_rate
-
-
-def get_target_tasks_for_phase(phase, base_rate, phase_duration):
-    """Calculate exact target number of tasks for a phase"""
-    if phase == 1:
-        avg_rate = base_rate * 0.3
-    elif phase == 2:
-        avg_rate = base_rate * 1.5
-    elif phase == 3:
-        avg_rate = base_rate * 1.0
-    elif phase == 4:
-        avg_rate = base_rate * 1.0
-    else:
-        avg_rate = base_rate
-
-    return int(avg_rate * (phase_duration / 60))
 
 
 def push_task_to_worker_queue(redis_client, queue_name, task_json):
@@ -419,7 +414,7 @@ def push_task_to_worker_queue(redis_client, queue_name, task_json):
         return False
 
 
-def generate_tasks_for_phase(phase, phase_name, base_rate, phase_duration, window_duration,
+def generate_tasks_for_phase(phase_config_data,
                              redis_client, worker_queue, program_start_time,
                              calibrated_model_a=None, calibrated_model_b=None,
                              calibrated_model_seed=None, calibrated_model_r_squared=None):
@@ -428,7 +423,12 @@ def generate_tasks_for_phase(phase, phase_name, base_rate, phase_duration, windo
     Uses controlled Poisson to hit exact target while maintaining variance
     """
     # Calculate exact target for this phase
-    target_tasks = get_target_tasks_for_phase(phase, base_rate, phase_duration)
+    phase = phase_config_data.get("phase_number")
+    phase_name = phase_config_data.get("phase_name")
+    base_rate = phase_config_data.get("base_rate")
+    phase_duration = phase_config_data.get("phase_duration")
+    window_duration = phase_config_data.get("window_duration")
+    target_tasks = phase_config_data.get("target_tasks")
 
     logger.info(f"\n{'='*70}")
     logger.info(f"PHASE {phase}: {phase_name}")
@@ -447,7 +447,7 @@ def generate_tasks_for_phase(phase, phase_name, base_rate, phase_duration, windo
         time_in_phase = (window_start - phase_start_time)
 
         # Calculate arrival rate for this window
-        rate = get_phase_rate(phase, base_rate, time_in_phase, phase_duration)
+        rate = get_phase_rate(phase_config_data, time_in_phase)
         expected_tasks = rate * (window_duration / 60)
 
         # Controlled Poisson: adjust to hit exact target

@@ -70,7 +70,11 @@ openfaas-functions/
 - Support graceful termination
 
 **Task Generation**:
-- Phase-based generation with configurable rates (e.g., 300 tasks/min)
+- Phase-based generation with configurable rates (e.g., 300 tasks/min) pulled from `utilities/configuration.yml` `phase_definitions`
+- Loads model and workload settings from `utilities/configuration.yml`
+- Draws processing times via gamma sampling (`target_mean_processing_time`, `processing_time_shape`) and inverts the calibrated model to choose image sizes
+- Sets task deadline: `2.0 × expected_duration`
+- Streams multi-phase workloads defined in `phase_definitions`
 - Each task includes: unique ID, simulated processing time, deadline, timestamps
 - Uses calibrated model for realistic processing time simulation
 

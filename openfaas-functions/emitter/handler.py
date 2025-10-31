@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import logging
+import traceback
 from datetime import datetime
 from utils import (
     get_redis_client,
@@ -33,9 +34,9 @@ def handle(event, context):
     calibrated_model_seed, calibrated_model_r_squared = body.get("calibrated_model_seed"), body.get("calibrated_model_r_squared")
 
     # NEW: Task generation
-    base_rate = body.get('base_rate', 300)  # tasks/min
-    phase_duration = body.get('phase_duration', 60)  # seconds
-    window_duration = body.get('window_duration', 1)  # seconds
+    base_rate = body.get('base_rate')  # tasks/min
+    phase_duration = body.get('phase_duration')  # seconds
+    window_duration = body.get('window_duration')  # seconds
 
     if program_start_time_str:
         program_start_time = datetime.fromisoformat(program_start_time_str)
@@ -43,7 +44,7 @@ def handle(event, context):
         logger.error("START_TIMESTAMP environment variable not set.")
         sys.exit(1)
 
-    if not all([input_q, worker_q, start_q, wait_time, program_start_time, calibrated_model_a, calibrated_model_b, calibrated_model_seed, calibrated_model_r_squared, base_rate, phase_duration, window_duration]):
+    if not all([input_q, worker_q, start_q, wait_time, program_start_time, calibrated_model_a, calibrated_model_b, calibrated_model_seed, calibrated_model_r_squared]):
         return {"statusCode": 400, "body": "Missing required fields in request body."}
 
     logger.debug(f"Emitter received body: {body}")
@@ -95,11 +96,7 @@ def handle(event, context):
                 
                 try:
                     phase_tasks = generate_tasks_for_phase(
-                        phase=data['phase_number'],
-                        phase_name=data['phase_name'],
-                        base_rate=data['base_rate'],
-                        phase_duration=data['phase_duration'],
-                        window_duration=data['window_duration'],
+                        data,
                         redis_client=redis_client,
                         worker_queue=worker_q,
                         program_start_time=program_start_time,
@@ -112,20 +109,16 @@ def handle(event, context):
                     logger.info(f"Phase {data['phase_number']} complete: {phase_tasks} tasks generated")
                 except Exception as phase_error:
                     logger.error(f"Phase generation failed: {phase_error}")
-                    import traceback
                     traceback.print_exc()
             else:
-                # Regular task: forward to worker_queue
-                logger.info(f"\n[TIMER] got task at {(get_utc_now() - program_start_time).total_seconds():.4f} on pod {pod_name}")
-                task = extract_generated_task(raw_data, program_start_time, calibrated_model_a, calibrated_model_b, calibrated_model_seed, calibrated_model_r_squared)
-                tasks_generated += 1
+                logger.error(f"Invalid data in input_queue: {data}")
+                raise ValueError(f"Invalid data in input_queue: {data}")
 
                 safe_redis_call(lambda: redis_client.lpush(worker_q, json.dumps(task)))
                 logger.info(f"[TIMER] Pushed {tasks_generated} tasks at {(get_utc_now() - program_start_time).total_seconds():.4f} from '{input_q}' to '{worker_q}' on pod {pod_name}")
 
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
-            import traceback
             traceback.print_exc()
             break
 

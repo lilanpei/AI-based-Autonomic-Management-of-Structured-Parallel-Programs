@@ -30,9 +30,38 @@ function_invoke_retries: 32
 scale_down_timeout: 1
 scale_down_retries: 32
 base_rate: 300
-phase_duration: 60
 number_of_phases: 4
-window_duration: 1
+phase_definitions:
+  - phase_number: 1
+    phase_name: Steady Low Load
+    phase_multiplier: 0.3
+    phase_duration: 60
+    window_duration: 1
+    phase_pattern: steady
+  - phase_number: 2
+    phase_name: Steady High Load
+    phase_multiplier: 1.5
+    phase_duration: 60
+    window_duration: 1
+    phase_pattern: steady
+  - phase_number: 3
+    phase_name: Slow Oscillation
+    phase_multiplier: 1.0
+    phase_duration: 60
+    window_duration: 1
+    phase_pattern: oscillation_slow
+    oscillation_min: 0.5
+    oscillation_max: 1.5
+    oscillation_cycles: 1
+  - phase_number: 4
+    phase_name: Fast Oscillation
+    phase_multiplier: 1.0
+    phase_duration: 60
+    window_duration: 1
+    phase_pattern: oscillation_fast
+    oscillation_min: 0.3
+    oscillation_max: 1.7
+    oscillation_cycles: 4
 number_of_most_recent_logs: None
 log_dir: /home/lanpei/AI-based-Autonomic-Management-of-Structured-Parallel-Programs/orchestrator/logs_farm/1008_100t_300s
 plot_output_dir: /home/lanpei/AI-based-Autonomic-Management-of-Structured-Parallel-Programs/plots/1008_100t_300s

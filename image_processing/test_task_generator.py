@@ -132,7 +132,7 @@ def plot_arrival_rates(base_rate, phase_duration, window_duration, output_file='
     ax1.set_title(f'Four-Phase Task Arrival Pattern (Base Rate: {base_rate} tasks/min)', 
                   fontsize=14, fontweight='bold')
     ax1.grid(True, alpha=0.3)
-    ax1.legend(loc='upper right', fontsize=9)
+    ax1.legend(loc='best', fontsize=9)
     ax1.set_xlim(0, phase_boundaries[-1] / 60)
     ax1.set_ylim(0, base_rate * 1.8)
 

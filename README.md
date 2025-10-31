@@ -10,14 +10,14 @@ This project implements an **RL-based autoscaling system** for serverless parall
 
 ### **What It Does**
 
-- **Serverless Task Processing**: Producer-consumer workflow with OpenFaaS functions
-- **Dynamic Autoscaling**: RL agents learn optimal scaling policies (1-32 workers) with single-step adjustments
+- **Serverless Task Processing**: Producer-consumer workflow with OpenFaaS functions and calibrated image workloads
+- **Dynamic Autoscaling**: RL agents learn optimal scaling policies (1-32 workers) with single-step adjustments informed by config-driven workload phases
 - **QoS-Aware**: Tracks deadline compliance and optimizes for QoS targets
 - **Baseline Comparison**: Reactive policies for benchmarking RL performance
 
 ### **Key Components**
 
-1. **OpenFaaS Functions**: Emitter, Worker (scalable), Collector
+1. **OpenFaaS Functions**: Emitter, Worker (scalable), Collector (gamma-sampled image workloads)
 2. **Autoscaling Environment**: Gym-compatible RL environment
 3. **RL Agents**: SARSA
 4. **Baseline Policies**: ReactiveAverage, ReactiveMaximum
@@ -126,7 +126,7 @@ python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
 **Solution**: Custom `python3-http-skeleton` template for long-running functions
 
 **Features**:
-- Indefinite execution with `while True` loop
+- Indefinite execution with `while True` loop and gamma-based image-size sampling
 - Flask + Waitress HTTP server
 - 12-hour timeouts
 - Shared utilities integration
@@ -138,6 +138,7 @@ python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
 - **Observation**: 9D vector [input_q, worker_q, result_q, output_q, workers, avg_time, max_time, arrival_rate, qos_rate]
 - **Action**: 3 discrete actions (-1, 0, +1 workers)
 - **Reward**: Configurable blend of QoS delta, normalized queue penalty, worker/idle cost, and scaling penalty (see `utilities/configuration.yml`)
+- **Workload**: Task generator draws processing times from a gamma distribution (mean 1.5 s, shape 4.0 by default) and derives image sizes via the calibrated quadratic model
 - **Episode Termination**: Task-driven (ends when all tasks complete or max steps reached)
 
 ### **3. SARSA**
@@ -161,6 +162,7 @@ python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
 
 - **Scale up**: Deploy new workers, invoke immediately
 - **Scale down**: SYN/ACK protocol, finish current task
+- **Workload shaping**: Emitter reads `phase_definitions` from `utilities/configuration.yml` to produce configurable multi-phase arrivals
 
 ---
 
@@ -214,8 +216,10 @@ python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
 Key parameters in `utilities/configuration.yml`:
 
 - **Workload**: `base_rate` (300 tasks/min), `phase_duration`, `number_of_phases`
+- **Phases**: `phase_definitions` list (multipliers, durations, patterns, oscillation bounds) consumed by `image_processing/task_generator.py`
 - **Scaling**: `min_workers` (1), `max_workers` (32), `initial_workers` (3)
 - **Environment**: `observation_window` (10s), `step_duration` (10s by default across scaling + observation), optional reactive `horizon`
+- **Processing time sampling**: `target_mean_processing_time` (default 1.5 s) and `processing_time_shape` (default 4.0) control gamma draws for image sizes in the function utilities
 - **Reward**: `reward` block with QoS target, queue target, idle threshold, and per-term weights
 - **QoS**: Task deadlines based on calibrated processing time model (DEADLINE_COEFFICIENT = 2.0)
 - **SARSA**: `learning_rate` (0.1), `gamma` (0.99), `epsilon_decay` (0.995)

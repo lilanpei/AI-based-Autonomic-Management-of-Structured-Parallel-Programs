@@ -103,7 +103,7 @@ def init_redis_client():
         logger.error("Unexpected error during Redis initialization", error=str(e))
         raise
 
-def get_redis_client_with_retry(retries=3, delay=2):
+def get_redis_client_with_retry(retries=3, delay=1):
     """
     Attempts to connect to Redis with enhanced retry logic and exponential backoff.
     """
@@ -720,7 +720,7 @@ def deploy_function_instance(function_name, image, max_retries=3, delay=1):
 
             if f"Function {function_name} already exists, attempting rolling-update" in stdout:
                 print(f"[INFO] Detected rolling-update for {function_name}, waiting before retry...")
-                time.sleep(delay * attempt)  # Exponential wait
+                time.sleep(delay)
                 continue
 
             print(f"[INFO][SUCCESS] Function '{function_name}' deployed successfully.")

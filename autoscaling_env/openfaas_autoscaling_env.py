@@ -145,6 +145,10 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         self.total_qos_violations = 0
         self.total_scaling_actions = 0
 
+        # Reset task generation timing markers
+        self.task_generation_start_time = 0.0
+        self.task_generation_end_time = 0.0
+
         # Kubernetes clients
         try:
             config.load_incluster_config()
@@ -206,9 +210,6 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             else:
                 self._scale_down(current_workers, abs(delta))
 
-            # Wait for scaling to complete
-            time.sleep(5)
-
             # Verify
             current_workers = get_deployment_replicas(
                 self.apps_v1_api,
@@ -219,8 +220,10 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             print(f"[INFO] Workers reset to: {current_workers}")
 
         # Generate tasks for this episode (Step 3)
-        print("[INFO] Generating tasks for episode...")
+        self.task_generation_start_time = (get_utc_now()-self.program_start_time).total_seconds()
+        print(f"[INFO] Generating tasks for episode at {self.task_generation_start_time:.2f} seconds after program start")
         self._generate_tasks()
+        self.task_generation_end_time = (get_utc_now()-self.program_start_time).total_seconds()
 
         print(f"[INFO] Initial workers: {current_workers}")
         print(f"[INFO] Program start time: {self.program_start_time}")
@@ -294,7 +297,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
 
         # Wait for remaining step duration to observe effects
         # step_duration is the TOTAL time for the step (scaling + observation)
-        remaining_time = max(0, self.step_duration - scaling_time - 0.15) # 0.15s for observation
+        remaining_time = max(0, self.step_duration - scaling_time - 0.2) # 0.2s for observation
         if remaining_time > 0:
             print(f"[INFO] Scaling took {scaling_time:.2f}s, waiting {remaining_time:.2f}s more (total step: {self.step_duration}s)...")
             time.sleep(remaining_time)
@@ -337,7 +340,10 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             'scaling_actions': self.total_scaling_actions,
             'qos_violations': self.total_qos_violations,
             'scaling_time': scaling_time,
-            'step_duration': step_duration
+            'step_duration': step_duration,
+            'program_start_time': self.program_start_time,
+            'task_generation_start_time': self.task_generation_start_time,
+            'task_generation_end_time': self.task_generation_end_time
         }
 
         print(f"[REWARD] {reward:.2f} | Total: {self.total_reward:.2f}")
@@ -393,21 +399,19 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         Returns:
             int: Expected total tasks
         """
-        base_rate = self.config.get("base_rate", 300)  # tasks/min
-        phase_duration = self.config.get("phase_duration", 60)  # seconds
+        base_rate = self.config.get("base_rate")  # tasks/min
+        configured_phases = self.config.get("phase_definitions")
 
-        # 4 phases with different rates
-        # Phase 1: 30% of base_rate
-        # Phase 2: 150% of base_rate
-        # Phase 3: 100% average (oscillating)
-        # Phase 4: 100% average (oscillating)
-        phase1_tasks = int(base_rate * 0.3 * (phase_duration / 60))
-        phase2_tasks = int(base_rate * 1.5 * (phase_duration / 60))
-        phase3_tasks = int(base_rate * 1.0 * (phase_duration / 60))
-        phase4_tasks = int(base_rate * 1.0 * (phase_duration / 60))
+        if not configured_phases:
+            raise ValueError("phase_definitions missing from configuration.yml")
 
-        total = phase1_tasks + phase2_tasks + phase3_tasks + phase4_tasks
-        return total
+        target_tasks = 0
+        for _ , phase_cfg in enumerate(configured_phases):
+            multiplier = phase_cfg.get("phase_multiplier")
+            duration = int(phase_cfg.get("phase_duration"))
+            target_tasks += int(base_rate * multiplier * (duration / 60))
+
+        return target_tasks
 
     def _execute_scaling_action(self, delta, current_workers):
         """Execute scaling action (scale up or down)"""
@@ -868,7 +872,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
 
         try:
             result = subprocess.run(
-                ["python3", task_generator_path, str(base_rate), str(phase_duration), str(window_duration)],
+                ["python3", task_generator_path],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -909,8 +913,6 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             "calibrated_model_seed": self.config.get("calibrated_model")["seed"],
             "calibrated_model_r_squared": self.config.get("calibrated_model")["r_squared"],
             "base_rate": self.config.get("base_rate"),
-            "phase_duration": self.config.get("phase_duration"),
-            "window_duration": self.config.get("window_duration"),
         }
 
     def _wait_for_task_completion(self, timeout=300, check_interval=5):

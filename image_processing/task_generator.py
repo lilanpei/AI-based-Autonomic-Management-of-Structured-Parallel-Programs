@@ -315,65 +315,60 @@ def generate_tasks_for_phase(phase, phase_name, base_rate, phase_duration, windo
     return total_tasks_generated
 
 
-def generate_phase_configs(base_rate, phase_duration, window_duration):
-    """
-    Generate phase configuration objects for emitter to process
-    
-    Returns:
-        list: List of phase configuration dictionaries
-    """
-    phases = [
-        {
+def generate_phase_configs():
+    """Generate phase configuration objects using configuration.yml definitions."""
+    config = get_config()
+    configured_phases = config.get("phase_definitions")
+    base_rate = config.get("base_rate")
+    number_of_phases = config.get("number_of_phases")
+
+    if not configured_phases:
+        raise ValueError("phase_definitions missing from configuration.yml")
+
+    phases = []
+    for _ , phase_cfg in enumerate(configured_phases):
+        multiplier = phase_cfg.get("phase_multiplier")
+        duration = int(phase_cfg.get("phase_duration"))
+        window = int(phase_cfg.get("window_duration"))
+
+        target_tasks = int(base_rate * multiplier * (duration / 60))
+
+        phase = {
             "type": "phase_config",
-            "phase_number": 1,
-            "phase_name": "Steady Low Load",
+            "phase_number": phase_cfg.get("phase_number"),
+            "phase_name": phase_cfg.get("phase_name"),
             "base_rate": base_rate,
-            "phase_multiplier": 0.3,
-            "phase_duration": phase_duration,
-            "window_duration": window_duration,
-            "target_tasks": int(base_rate * 0.3 * (phase_duration / 60)),
-            "phase_pattern": "steady"
-        },
-        {
-            "type": "phase_config",
-            "phase_number": 2,
-            "phase_name": "Steady High Load",
-            "base_rate": base_rate,
-            "phase_multiplier": 1.5,
-            "phase_duration": phase_duration,
-            "window_duration": window_duration,
-            "target_tasks": int(base_rate * 1.5 * (phase_duration / 60)),
-            "phase_pattern": "steady"
-        },
-        {
-            "type": "phase_config",
-            "phase_number": 3,
-            "phase_name": "Slow Oscillation",
-            "base_rate": base_rate,
-            "phase_multiplier": 1.0,
-            "phase_duration": phase_duration,
-            "window_duration": window_duration,
-            "target_tasks": int(base_rate * 1.0 * (phase_duration / 60)),
-            "phase_pattern": "oscillation_slow",
-            "oscillation_min": 0.5,
-            "oscillation_max": 1.5,
-            "oscillation_cycles": 1
-        },
-        {
-            "type": "phase_config",
-            "phase_number": 4,
-            "phase_name": "Fast Oscillation",
-            "base_rate": base_rate,
-            "phase_multiplier": 1.0,
-            "phase_duration": phase_duration,
-            "window_duration": window_duration,
-            "target_tasks": int(base_rate * 1.0 * (phase_duration / 60)),
-            "phase_pattern": "oscillation_fast",
-            "oscillation_min": 0.3,
-            "oscillation_max": 1.7,
-            "oscillation_cycles": 4
+            "phase_multiplier": multiplier,
+            "phase_duration": duration,
+            "window_duration": window,
+            "target_tasks": target_tasks,
+            "phase_pattern": phase_cfg.get("phase_pattern"),
         }
-    ]
+
+        if phase["phase_pattern"].startswith("oscillation"):
+            phase["oscillation_min"] = phase_cfg.get("oscillation_min")
+            phase["oscillation_max"] = phase_cfg.get("oscillation_max")
+            phase["oscillation_cycles"] = phase_cfg.get("oscillation_cycles")
+
+        phases.append(phase)
+
+        print(f"\n{'='*70}")
+        print(f"PHASE CONFIG GENERATOR")
+        print(f"{'='*70}")
+        print(f"Number of phases: {number_of_phases}")
+        print(f"Phase {phase['phase_number']}:")
+        print(f"Base rate: {phase['base_rate']} tasks/min")
+        print(f"Multiplier: {phase['phase_multiplier']}")
+        print(f"Duration: {phase['phase_duration']}s")
+        print(f"Window duration: {phase['window_duration']}s")
+        print(f"Target tasks: {phase['target_tasks']}")
+        print(f"Pattern: {phase['phase_pattern']}")
+        if phase['phase_pattern'].startswith("oscillation"):
+            print(f"Oscillation min: {phase['oscillation_min']}")
+            print(f"Oscillation max: {phase['oscillation_max']}")
+            print(f"Oscillation cycles: {phase['oscillation_cycles']}")
+        print(f"{'='*70}\n")
+
     return phases
 
 
@@ -391,31 +386,6 @@ def main():
     task_generation_start_time = (get_utc_now() - program_start_time).total_seconds()
     print(f"[TIMER] Phase config generation started at [{task_generation_start_time:.4f}] seconds.")
 
-    # Parse arguments
-    if len(sys.argv) != 4:
-        print("Usage: python task_generator.py <base_rate> <phase_duration> <window_duration>")
-        print("Example: python task_generator.py 60 60 1")
-        print("  base_rate: Base arrival rate in tasks/minute (e.g., 60)")
-        print("  phase_duration: Duration of each phase in seconds (e.g., 60 = 1 min)")
-        print("  window_duration: Duration of each generation window in seconds (e.g., 1)")
-        print("\nFour phases will run sequentially:")
-        print("  Phase 1: Steady Low Load (30% of base rate)")
-        print("  Phase 2: Steady High Load (150% of base rate)")
-        print("  Phase 3: Slow Oscillation (1 cycle per phase)")
-        print("  Phase 4: Fast Oscillation (4 cycles per phase)")
-        sys.exit(1)
-
-    try:
-        base_rate = int(sys.argv[1])
-        phase_duration = int(sys.argv[2])
-        window_duration = int(sys.argv[3])
-
-        if base_rate <= 0 or phase_duration <= 0 or window_duration <= 0:
-            raise ValueError("All parameters must be positive integers.")
-    except ValueError as ve:
-        print(f"[ERROR] Invalid parameters: {ve}", file=sys.stderr)
-        sys.exit(1)
-
     # Connect to Redis
     redis_host = os.getenv("REDIS_HOSTNAME", "localhost")
     redis_port = int(os.getenv("REDIS_PORT", 6379))
@@ -429,29 +399,12 @@ def main():
         print(f"[ERROR] Failed to connect to Redis: {e}", file=sys.stderr)
         sys.exit(1)
 
-    total_duration = phase_duration * 4
-
-    print(f"\n{'='*70}")
-    print(f"PHASE CONFIG GENERATOR")
-    print(f"{'='*70}")
-    print(f"Base rate: {base_rate} tasks/min")
-    print(f"Phase duration: {phase_duration}s ({phase_duration/60:.1f} min)")
-    print(f"Window duration: {window_duration}s")
-    print(f"Total duration: {total_duration}s ({total_duration/60:.1f} min)")
-    print(f"Target queue: {input_queue}")
-    print(f"\nPhase Overview:")
-    print(f"  Phase 1 (0-{phase_duration}s): Steady Low Load (~{base_rate*0.3:.0f} tasks/min)")
-    print(f"  Phase 2 ({phase_duration}-{phase_duration*2}s): Steady High Load (~{base_rate*1.5:.0f} tasks/min)")
-    print(f"  Phase 3 ({phase_duration*2}-{phase_duration*3}s): Slow Oscillation ({base_rate*0.5:.0f}-{base_rate*1.5:.0f} tasks/min)")
-    print(f"  Phase 4 ({phase_duration*3}-{phase_duration*4}s): Fast Oscillation ({base_rate*0.3:.0f}-{base_rate*1.7:.0f} tasks/min)")
-    print(f"{'='*70}\n")
-
     # Generate phase configurations
-    phase_configs = generate_phase_configs(base_rate, phase_duration, window_duration)
-    
+    phase_configs = generate_phase_configs()
+
     print(f"[INFO] Generated {len(phase_configs)} phase configurations")
     print(f"[INFO] Pushing phase configs to '{input_queue}'...\n")
-    
+
     # Push phase configs to input_queue
     for phase_config in phase_configs:
         phase_json = json.dumps(phase_config)

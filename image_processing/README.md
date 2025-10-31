@@ -15,6 +15,7 @@
 - **Model**: `time = 1.71e-07 × size² + 0.00167` seconds
 - **R² = 0.9999** (excellent fit)
 - **Configuration**: Automatically updated in `utilities/configuration.yml`
+- **Sampling Defaults**: Mean 1.5 s, gamma shape 4.0 (configurable)
 
 ---
 
@@ -40,7 +41,7 @@
 - Saves calibration results to `calibration_results.json`
 - **Automatically updates** `utilities/configuration.yml` (not orchestrator/)
 - Generates visualization in `calibration_plot.png`
-- Updates both emitter and worker to use calibrated model
+- Updates calibrated coefficients, processing-time sampling defaults, and phase definitions used by the emitter/worker stack
 
 ### **4. Statistical Rigor**
 - Multiple trials per image size (default: 10)
@@ -96,26 +97,27 @@ The calibration measures a **4-stage sequential pipeline**:
 | 2048×2048 | 0.719s (719ms) | 1.42s |
 | 4096×4096 | 2.870s (2870ms) | 5.58s |
 
-**Image Size Distribution** (configured in `utils.py`):
-- 5% small (512×512)
-- 15% medium (1024×1024)
-- 40% large (2048×2048)
-- 40% extra-large (4096×4096)
-- **Average: 1.47 seconds per task**
+**Processing-Time Sampling** (emitter `utils.py`):
+- Draws a processing time from a gamma distribution (`shape`, `target_mean_processing_time`) defined in `utilities/configuration.yml`
+- Clips the draw to calibrated min/max, then inverts the quadratic model to compute the corresponding image size
+- Recomputes the final simulated duration from calibrated coefficients to stay consistent with the model
+- Defaults target mean to **1.5 seconds** with shape **4.0**, but both are configurable
 
 ---
 
 ## 🎨 Phase-Based Workload Generation
 
-**4-Phase Design** (base_rate=300 tasks/min, 60s per phase):
+**Phase Definitions** (default `phase_definitions` in `utilities/configuration.yml`):
 
-| Phase | Rate Multiplier | Arrival Rate | Total Tasks | Purpose |
-|-------|----------------|--------------|-------------|----------|
-| 1. Low Load | 30% | 1.5 tasks/s | ~90 | Baseline |
-| 2. High Load | 150% | 7.5 tasks/s | ~450 | **Trigger autoscaling** |
-| 3. Sine Wave | 50-150% | 2.5-7.5 tasks/s | ~300 | Variable load |
-| 4. Cosine Wave | 50-150% | 2.5-7.5 tasks/s | ~300 | Variable load |
-| **Total** | **Variable** | **~5 tasks/s avg** | **~1140** | **Multi-phase** |
+| Phase | Rate Multiplier | Duration | Pattern | Notes |
+|-------|-----------------|----------|---------|-------|
+| 1. Steady Low Load | 30% | 60 s | steady | Baseline warm-up |
+| 2. Steady High Load | 150% | 60 s | steady | Forces rapid scale-up |
+| 3. Slow Oscillation | 100% avg | 60 s | oscillation_slow | 0.5–1.5×, 1 cycle |
+| 4. Fast Oscillation | 100% avg | 60 s | oscillation_fast | 0.3–1.7×, 4 cycles |
+| **Total** | — | **240 s** | — | ≈1140 tasks at base_rate 300 |
+
+Customize the number of phases, multipliers, durations, and oscillation bounds directly in `utilities/configuration.yml`; emitter picks them up through `phase_definitions` at runtime.
 
 **Autoscaling Requirements**:
 - Single worker capacity: 0.68 tasks/s (1 / 1.47s)
@@ -180,9 +182,10 @@ R² = 0.9999
 
 ## 🔧 Configuration
 
-- **Image sizes**: [512, 1024, 2048, 4096] - covers thumbnail to high-res
 - **Trials per size**: 10 - balances accuracy with speed (~2-3 min total)
 - **Random seed**: 42 - ensures reproducibility
+- **Target mean processing time**: 1.5 s (gamma-based sampling default)
+- **Gamma shape**: 4.0 (controls spread; tweak in configuration)
 
 ---
 

@@ -7,9 +7,9 @@ This script tests both reactive baseline policies:
 2. ReactiveMaximum (aggressive)
 
 Usage:
-    python test_reactive_baselines.py --agent average --steps 15
-    python test_reactive_baselines.py --agent maximum --steps 15
-    python test_reactive_baselines.py --agent both --steps 15
+    python test_reactive_baselines.py --agent average --steps 50
+    python test_reactive_baselines.py --agent maximum --steps 50
+    python test_reactive_baselines.py --agent both --steps 50
 """
 
 import os
@@ -30,7 +30,7 @@ sys.path.insert(0, project_root)
 
 from autoscaling_env.openfaas_autoscaling_env import OpenFaaSAutoscalingEnv
 from autoscaling_env.baselines.reactive_policies import ReactiveAverage, ReactiveMaximum
-
+from utilities.utilities import get_utc_now
 
 LOG_DIR = Path(current_dir) / "logs"
 
@@ -116,9 +116,10 @@ def test_single_agent(agent_name, agent, env, num_steps=20):
         qos_rate = next_state[8]
         scaling_time = info['scaling_time']
         step_duration = info['step_duration']
+        time = (get_utc_now() - info['program_start_time']).total_seconds() - info['task_generation_start_time']
 
-        print(f"{'Step':<6} {'Action':<8} {'Scale_T':<8} {'Step_D':<8} {'Input_Q':<8} {'Worker_Q':<8} {'Result_Q':<8} {'Output_Q':<8} {'Workers':<8} {'QoS':<8} {'AVG_T':<8} {'MAX_T':<8} {'ARR.':<8} {'Reward':<10}")
-        print(f"{step+1:<6} {action_map[action]:<8} {f'{scaling_time:.2f}s':<8} {f'{step_duration:.2f}s':<8} {next_state[0]:<8.0f} {queue_length:<8.0f} {next_state[2]:<8.0f} {next_state[3]:<8.0f} {workers:<8.0f} {qos_rate:<8.2%} {f'{avg_times[-1]:.2f}s':<8} {f'{max_times[-1]:.2f}s':<8} {f'{arrival_rates[-1]:.2f}s':<8} {reward:<10.2f}")
+        print(f"{'Step':<6} {'Time':<8} {'Action':<8} {'Scale_T':<8} {'Step_D':<8} {'Input_Q':<8} {'Worker_Q':<8} {'Result_Q':<8} {'Output_Q':<8} {'Workers':<8} {'QoS':<8} {'AVG_T':<8} {'MAX_T':<8} {'ARR.':<8} {'Reward':<10}")
+        print(f"{step+1:<6} {f'{time:.2f}s':<8} {action_map[action]:<8} {f'{scaling_time:.2f}s':<8} {f'{step_duration:.2f}s':<8} {next_state[0]:<8.0f} {queue_length:<8.0f} {next_state[2]:<8.0f} {next_state[3]:<8.0f} {workers:<8.0f} {qos_rate:<8.2%} {f'{avg_times[-1]:.2f}s':<8} {f'{max_times[-1]:.2f}s':<8} {f'{arrival_rates[-1]:.2f}s':<8} {reward:<10.2f}")
 
         # Update state
         state = next_state
@@ -437,12 +438,12 @@ def main():
                         help='Which agent to test')
     parser.add_argument('--steps', type=int, default=50,
                         help='Maximum number of steps (episode ends early if all tasks complete)')
-    parser.add_argument('--initial-workers', type=int, default=1,
+    parser.add_argument('--initial-workers', type=int, default=8,
                         help='Initial number of workers')
     parser.add_argument('--max-workers', type=int, default=32,
                         help='Maximum number of workers')
-    parser.add_argument('--step-duration', type=int, default=10,
-                        help='Total step duration in seconds (includes scaling 10~17s)')
+    parser.add_argument('--step-duration', type=int, default=8,
+                        help='Total step duration in seconds (includes scaling + get observation 2~7s)')
     parser.add_argument('--horizon', type=float, default=None,
                         help='Planning horizon in seconds for reactive policies (defaults to step-duration)')
 
@@ -488,7 +489,7 @@ def main():
                 step_duration=args.step_duration,
                 max_steps=args.steps,
                 initial_workers=args.initial_workers,
-                initialize_workflow=True  # Deploy emitter/collector/workers
+                initialize_workflow=False  # Deploy emitter/collector/workers
             )
             print("✓ Environment initialized successfully")
         except Exception as e:
