@@ -1,341 +1,158 @@
-"""
-SARSA Agent for OpenFaaS Autoscaling
+"""Tabular SARSA agent for the OpenFaaS autoscaling environment."""
 
-SARSA (State-Action-Reward-State-Action) is an on-policy TD control algorithm.
-It learns Q(s,a) by following the current policy and updating based on the
-action actually taken in the next state.
+from __future__ import annotations
 
-Key Features:
-- On-policy learning (safer for real deployment)
-- Epsilon-greedy exploration
-- Tile coding for continuous state discretization
-- Experience replay for better sample efficiency
-"""
+import math
+import pickle
+from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import DefaultDict, Iterable, Tuple
 
 import numpy as np
-import pickle
-import os
-from collections import defaultdict, deque
-import random
 
 
-class TileCoding:
-    """
-    Tile coding for continuous state space discretization
+@dataclass
+class DiscretizationConfig:
+    """Configuration describing how to discretize each observation dimension."""
 
-    Converts continuous observations into discrete tile indices for Q-table lookup.
-    Uses multiple overlapping tilings to provide generalization.
-    """
+    bins_per_dimension: Tuple[int, ...]
+    observation_low: Iterable[float]
+    observation_high: Iterable[float]
 
-    def __init__(self, num_tilings=8, tiles_per_dim=8, state_bounds=None):
-        """
-        Initialize tile coding
+    def __post_init__(self) -> None:
+        low = np.array(self.observation_low, dtype=float)
+        high = np.array(self.observation_high, dtype=float)
 
-        Args:
-            num_tilings: Number of overlapping tilings
-            tiles_per_dim: Number of tiles per dimension per tiling
-            state_bounds: List of (min, max) tuples for each state dimension
-        """
-        self.num_tilings = num_tilings
-        self.tiles_per_dim = tiles_per_dim
-        self.state_bounds = state_bounds or []
+        if low.shape != high.shape:
+            raise ValueError("observation bounds must have matching shapes")
+        if len(self.bins_per_dimension) != low.size:
+            raise ValueError("bins_per_dimension must match observation dimensionality")
 
-    def get_tiles(self, state):
-        """
-        Get tile indices for a given state
-
-        Args:
-            state: Continuous state vector
-
-        Returns:
-            List of tile indices (one per tiling)
-        """
-        tiles = []
-
-        for tiling_idx in range(self.num_tilings):
-            # Offset each tiling slightly
-            offset = tiling_idx / self.num_tilings
-
-            # Discretize each dimension
-            tile_coords = []
-            for dim_idx, value in enumerate(state):
-                if dim_idx < len(self.state_bounds):
-                    min_val, max_val = self.state_bounds[dim_idx]
-                    # Normalize to [0, 1]
-                    normalized = (value - min_val) / (max_val - min_val + 1e-8)
-                else:
-                    normalized = value
-
-                # Add offset and discretize
-                tile_coord = int((normalized + offset) * self.tiles_per_dim) % self.tiles_per_dim
-                tile_coords.append(tile_coord)
-
-            # Convert coordinates to single index
-            tile_idx = hash((tiling_idx, tuple(tile_coords)))
-            tiles.append(tile_idx)
-
-        return tuple(tiles)
+        self.low = low
+        self.high = high
 
 
+@dataclass
+class SARSAHyperparams:
+    alpha: float = 0.1
+    gamma: float = 0.99
+    epsilon: float = 0.2
+    epsilon_min: float = 0.05
+    epsilon_decay: float = 0.995
+
+
+@dataclass
 class SARSAAgent:
-    """
-    SARSA Agent with tile coding and experience replay
+    """Simple tabular SARSA agent with configurable discretization."""
 
-    On-policy TD control algorithm that learns Q(s,a) by following
-    the current epsilon-greedy policy.
-    """
+    action_size: int
+    discretization: DiscretizationConfig
+    hyperparams: SARSAHyperparams = field(default_factory=SARSAHyperparams)
 
-    def __init__(self,
-                 state_dim=9,
-                 action_dim=5,
-                 learning_rate=0.1,
-                 gamma=0.99,
-                 epsilon=1.0,
-                 epsilon_min=0.01,
-                 epsilon_decay=0.995,
-                 num_tilings=8,
-                 tiles_per_dim=8,
-                 use_replay=False,
-                 replay_buffer_size=10000,
-                 batch_size=32):
-        """
-        Initialize SARSA agent
+    def __post_init__(self) -> None:
+        self._build_bins()
+        self._q_table: DefaultDict[Tuple[int, ...], np.ndarray]
+        self._q_table = defaultdict(lambda: np.zeros(self.action_size, dtype=np.float32))
+        self._epsilon = self.hyperparams.epsilon
 
-        Args:
-            state_dim: Dimension of state space
-            action_dim: Number of discrete actions
-            learning_rate: Learning rate (alpha)
-            gamma: Discount factor
-            epsilon: Initial exploration rate
-            epsilon_min: Minimum exploration rate
-            epsilon_decay: Epsilon decay rate per episode
-            num_tilings: Number of tile coding tilings
-            tiles_per_dim: Tiles per dimension
-            use_replay: Whether to use experience replay
-            replay_buffer_size: Size of replay buffer
-            batch_size: Batch size for replay
-        """
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        self.learning_rate = learning_rate
-        self.gamma = gamma
-        self.epsilon = epsilon
-        self.epsilon_min = epsilon_min
-        self.epsilon_decay = epsilon_decay
+    # ------------------------------------------------------------------
+    # Discretization helpers
+    # ------------------------------------------------------------------
+    def _build_bins(self) -> None:
+        """Pre-compute bin edges for each observation dimension."""
+        eps = 1e-6
+        self._bins = []
+        for i, n_bins in enumerate(self.discretization.bins_per_dimension):
+            low = self.discretization.low[i]
+            high = self.discretization.high[i]
+            if math.isinf(low) or math.isinf(high):
+                # Fallback to a reasonable numeric range
+                low = -1.0
+                high = 1.0
+            if high <= low:
+                high = low + 1.0
+            # np.linspace returns n_bins+1 edges; we keep internal boundaries only
+            edges = np.linspace(low, high, n_bins + 1, dtype=np.float32)[1:-1]
+            if edges.size:
+                edges[0] -= eps
+                edges[-1] += eps
+            self._bins.append(edges)
 
-        # Tile coding for state discretization
-        # Define reasonable bounds for each state dimension
-        # [input_q, worker_q, result_q, output_q, workers, avg_time, max_time, arrival_rate, qos_rate]
-        state_bounds = [
-            (0, 200),    # input_q
-            (0, 200),    # worker_q
-            (0, 200),    # result_q
-            (0, 2000),   # output_q
-            (0, 32),     # workers
-            (0, 30),     # avg_time
-            (0, 30),     # max_time
-            (0, 20),     # arrival_rate
-            (0, 1),      # qos_rate
-        ]
-        self.tile_coder = TileCoding(num_tilings, tiles_per_dim, state_bounds)
+    def discretize(self, observation: np.ndarray) -> Tuple[int, ...]:
+        """Convert a continuous observation into a tuple of bin indices."""
+        observation = np.asarray(observation, dtype=np.float32)
+        if observation.size != len(self._bins):
+            raise ValueError("Observation dimensionality mismatch")
+        indices = []
+        for value, edges in zip(observation, self._bins):
+            if edges.size == 0:
+                indices.append(0)
+            else:
+                indices.append(int(np.digitize(value, edges)))
+        return tuple(indices)
 
-        # Q-table: maps (state_tiles, action) -> Q-value
-        self.q_table = defaultdict(float)
+    # ------------------------------------------------------------------
+    # SARSA core
+    # ------------------------------------------------------------------
+    def select_action(self, state: Tuple[int, ...]) -> int:
+        """Return an action index using epsilon-greedy policy."""
+        if np.random.random() < self._epsilon:
+            return np.random.randint(self.action_size)
+        q_values = self._q_table[state]
+        return int(np.argmax(q_values))
 
-        # Experience replay (optional)
-        self.use_replay = use_replay
-        self.replay_buffer = deque(maxlen=replay_buffer_size)
-        self.batch_size = batch_size
+    def update(
+        self,
+        state: Tuple[int, ...],
+        action: int,
+        reward: float,
+        next_state: Tuple[int, ...],
+        next_action: int,
+    ) -> None:
+        """Apply the SARSA update rule."""
+        q_sa = self._q_table[state][action]
+        q_next = self._q_table[next_state][next_action]
+        td_target = reward + self.hyperparams.gamma * q_next
+        self._q_table[state][action] += self.hyperparams.alpha * (td_target - q_sa)
 
-        # Statistics
-        self.episode_count = 0
-        self.total_steps = 0
+    def decay_epsilon(self) -> None:
+        self._epsilon = max(self.hyperparams.epsilon_min, self._epsilon * self.hyperparams.epsilon_decay)
 
-    def get_state_key(self, state):
-        """Convert continuous state to discrete tile indices"""
-        return self.tile_coder.get_tiles(state)
+    # ------------------------------------------------------------------
+    # Persistence & diagnostics
+    # ------------------------------------------------------------------
+    @property
+    def epsilon(self) -> float:
+        return self._epsilon
 
-    def get_q_value(self, state, action):
-        """
-        Get Q-value for state-action pair
+    def q_values(self, state: Tuple[int, ...]) -> np.ndarray:
+        return self._q_table[state].copy()
 
-        Uses tile coding to discretize state and lookup in Q-table.
-        """
-        state_key = self.get_state_key(state)
-        return self.q_table[(state_key, action)]
-
-    def select_action(self, state, training=True):
-        """
-        Select action using epsilon-greedy policy
-
-        Args:
-            state: Current state
-            training: If True, use epsilon-greedy; if False, use greedy
-
-        Returns:
-            Selected action (integer)
-        """
-        if training and random.random() < self.epsilon:
-            # Explore: random action
-            return random.randint(0, self.action_dim - 1)
-        else:
-            # Exploit: best action
-            q_values = [self.get_q_value(state, a) for a in range(self.action_dim)]
-            return int(np.argmax(q_values))
-
-    def update(self, state, action, reward, next_state, next_action, done):
-        """
-        SARSA update rule: Q(s,a) ← Q(s,a) + α[r + γQ(s',a') - Q(s,a)]
-
-        Args:
-            state: Current state
-            action: Action taken
-            reward: Reward received
-            next_state: Next state
-            next_action: Next action (actually taken)
-            done: Whether episode is done
-        """
-        # Get current Q-value
-        state_key = self.get_state_key(state)
-        current_q = self.q_table[(state_key, action)]
-
-        # Get next Q-value (using next_action actually taken)
-        if done:
-            target_q = reward
-        else:
-            next_state_key = self.get_state_key(next_state)
-            next_q = self.q_table[(next_state_key, next_action)]
-            target_q = reward + self.gamma * next_q
-
-        # SARSA update
-        td_error = target_q - current_q
-        self.q_table[(state_key, action)] += self.learning_rate * td_error
-
-        # Store experience for replay (optional)
-        if self.use_replay:
-            self.replay_buffer.append((state, action, reward, next_state, next_action, done))
-
-        self.total_steps += 1
-
-        return td_error
-
-    def replay_update(self):
-        """
-        Perform experience replay update
-
-        Samples random batch from replay buffer and performs SARSA updates.
-        """
-        if not self.use_replay or len(self.replay_buffer) < self.batch_size:
-            return
-
-        # Sample random batch
-        batch = random.sample(self.replay_buffer, self.batch_size)
-
-        for state, action, reward, next_state, next_action, done in batch:
-            self.update(state, action, reward, next_state, next_action, done)
-
-    def decay_epsilon(self):
-        """Decay exploration rate after each episode"""
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-        self.episode_count += 1
-
-    def save(self, filepath):
-        """
-        Save agent to file
-
-        Args:
-            filepath: Path to save file
-        """
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-
-        state = {
-            'q_table': dict(self.q_table),
-            'epsilon': self.epsilon,
-            'episode_count': self.episode_count,
-            'total_steps': self.total_steps,
-            'config': {
-                'state_dim': self.state_dim,
-                'action_dim': self.action_dim,
-                'learning_rate': self.learning_rate,
-                'gamma': self.gamma,
-                'epsilon_min': self.epsilon_min,
-                'epsilon_decay': self.epsilon_decay,
-            }
+    def save(self, output_path: Path) -> None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "action_size": self.action_size,
+            "hyperparams": self.hyperparams,
+            "discretization": self.discretization,
+            "epsilon": self._epsilon,
+            "q_table": dict(self._q_table),
         }
+        with output_path.open("wb") as fh:
+            pickle.dump(payload, fh)
 
-        with open(filepath, 'wb') as f:
-            pickle.dump(state, f)
-
-        print(f"[SAVE] Agent saved to {filepath}")
-        print(f"       Q-table size: {len(self.q_table)} entries")
-        print(f"       Episodes: {self.episode_count}, Steps: {self.total_steps}")
-
-    def load(self, filepath):
-        """
-        Load agent from file
-
-        Args:
-            filepath: Path to load file
-        """
-        with open(filepath, 'rb') as f:
-            state = pickle.load(f)
-
-        self.q_table = defaultdict(float, state['q_table'])
-        self.epsilon = state['epsilon']
-        self.episode_count = state['episode_count']
-        self.total_steps = state['total_steps']
-
-        print(f"[LOAD] Agent loaded from {filepath}")
-        print(f"       Q-table size: {len(self.q_table)} entries")
-        print(f"       Episodes: {self.episode_count}, Steps: {self.total_steps}")
-        print(f"       Epsilon: {self.epsilon:.4f}")
-
-    def get_stats(self):
-        """Get agent statistics"""
-        return {
-            'q_table_size': len(self.q_table),
-            'epsilon': self.epsilon,
-            'episode_count': self.episode_count,
-            'total_steps': self.total_steps,
-            'learning_rate': self.learning_rate,
-            'gamma': self.gamma,
-        }
-
-
-if __name__ == '__main__':
-    # Test tile coding
-    print("Testing Tile Coding...")
-    tile_coder = TileCoding(num_tilings=4, tiles_per_dim=4, 
-                           state_bounds=[(0, 10), (0, 20)])
-
-    state1 = np.array([5.0, 10.0])
-    state2 = np.array([5.1, 10.0])
-    state3 = np.array([7.0, 15.0])
-
-    tiles1 = tile_coder.get_tiles(state1)
-    tiles2 = tile_coder.get_tiles(state2)
-    tiles3 = tile_coder.get_tiles(state3)
-
-    print(f"State {state1} -> Tiles {tiles1}")
-    print(f"State {state2} -> Tiles {tiles2}")
-    print(f"State {state3} -> Tiles {tiles3}")
-    print(f"Similar states share tiles: {len(set(tiles1) & set(tiles2))} common")
-    print(f"Different states share tiles: {len(set(tiles1) & set(tiles3))} common")
-
-    # Test SARSA agent
-    print("\nTesting SARSA Agent...")
-    agent = SARSAAgent(state_dim=9, action_dim=5)
-
-    state = np.array([10, 50, 5, 100, 8, 2.5, 5.0, 5.0, 0.8])
-    action = agent.select_action(state, training=True)
-    print(f"Selected action: {action}")
-
-    next_state = np.array([8, 40, 3, 110, 8, 2.0, 4.5, 5.0, 0.9])
-    next_action = agent.select_action(next_state, training=True)
-    reward = 10.0
-
-    td_error = agent.update(state, action, reward, next_state, next_action, done=False)
-    print(f"TD error: {td_error:.4f}")
-
-    print(f"\nAgent stats: {agent.get_stats()}")
-    print("✓ SARSA agent working correctly!")
+    @classmethod
+    def load(cls, path: Path) -> "SARSAAgent":
+        with Path(path).open("rb") as fh:
+            payload = pickle.load(fh)
+        agent = cls(
+            action_size=payload["action_size"],
+            discretization=payload["discretization"],
+            hyperparams=payload["hyperparams"],
+        )
+        agent._q_table = defaultdict(lambda: np.zeros(agent.action_size, dtype=np.float32))
+        for state, values in payload["q_table"].items():
+            agent._q_table[state] = np.array(values, dtype=np.float32)
+        agent._epsilon = payload.get("epsilon", agent.hyperparams.epsilon)
+        return agent

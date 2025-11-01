@@ -103,6 +103,15 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         self.initial_workers = initial_workers
         self.initialize_workflow = initialize_workflow
 
+        # Define action/observation spaces immediately so agents can query bounds
+        self.action_space = spaces.Discrete(3)
+        self.action_map = {0: -1, 1: 0, 2: +1}
+        self.observation_space = spaces.Box(
+            low=np.array([0, 0, 0, 0, self.min_workers, 0, 0, 0, 0], dtype=np.float32),
+            high=np.array([10000, 10000, 10000, 10000, self.max_workers, 10, 10, 100, 1.0], dtype=np.float32),
+            dtype=np.float32
+        )
+
         # Initialize workflow if requested (like workflow_controller.py)
         if self.initialize_workflow:
             print("\n" + "="*70)
@@ -163,17 +172,6 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         Initialize/reset episode with consistent timing logic.
         Used by both __init__() and reset() to ensure identical behavior.
         """
-
-        # Action space: 3 discrete actions
-        self.action_space = spaces.Discrete(3)
-        self.action_map = {0: -1, 1: 0, 2: +1}
-
-        # Observation space: [input_q, worker_q, result_q, output_q, workers, avg_time, max_time, arrival_rate, qos_rate]
-        self.observation_space = spaces.Box(
-            low=np.array([0, 0, 0, 0, self.min_workers, 0, 0, 0, 0], dtype=np.float32),
-            high=np.array([10000, 10000, 10000, 10000, self.max_workers, 10, 10, 100, 1.0], dtype=np.float32),
-            dtype=np.float32
-        )
 
         # Reset all episode-specific state
         self._reset_episode_state()
@@ -723,12 +721,14 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         else:
             # No recent task data - check if we're still in task generation phase
             elapsed_time = current_time - self.episode_start_time
-            phase_duration = self.config.get("phase_duration", 60)
-            number_of_phases = self.config.get("number_of_phases", 4)
 
-            if elapsed_time < phase_duration * number_of_phases:
+            base_rate = self.config.get("base_rate")
+            phase_definitions = self.config.get("phase_definitions")
+            total_generation_time = sum(int(phase.get("phase_duration", 0)) for phase in phase_definitions)
+
+            if elapsed_time < total_generation_time:
                 # Still generating tasks - use configured base rate as default rate
-                arrival_rate = self.config.get("base_rate", 300) / 60.0  # Convert to tasks/sec
+                arrival_rate = base_rate / 60.0  # Convert to tasks/sec
             else:
                 # Past generation phase - no more tasks
                 arrival_rate = 0

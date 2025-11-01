@@ -13,6 +13,12 @@ autoscaling_env/
 │   ├── test_reactive_baselines.py # Test baseline policies (supports --horizon)
 │   └── README.md                  # Baseline documentation
 ├── rl/                            # RL agents and training
+│   ├── sarsa_agent.py    # SARSA
+│   ├── train_sarsa.py    # Training script
+│   ├── test_sarsa.py     # Evaluation script
+│   ├── plot_training.py  # Training plotter
+│   ├── utils.py          # Utility functions
+│   └── README.md
 └── openfaas_autoscaling_env.py    # Main Gym environment (9D observation)
 ```
 

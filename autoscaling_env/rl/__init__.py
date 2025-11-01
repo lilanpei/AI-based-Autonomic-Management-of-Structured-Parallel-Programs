@@ -1,18 +1,5 @@
-"""
-RL Agents for Autoscaling
+"""Reinforcement-learning utilities for the OpenFaaS autoscaling environment."""
 
-Provides:
-- Tabular methods: SARSA, Q-Learning, Monte Carlo
-- Deep RL: PPO
-- Training scripts
-"""
+from .sarsa_agent import SARSAAgent
 
-from .tabular_agents import SARSAAgent, QLearningAgent, MonteCarloAgent
-from .ppo_agent import PPOAgent
-
-__all__ = [
-    "SARSAAgent",
-    "QLearningAgent", 
-    "MonteCarloAgent",
-    "PPOAgent"
-]
+__all__ = ["SARSAAgent"]

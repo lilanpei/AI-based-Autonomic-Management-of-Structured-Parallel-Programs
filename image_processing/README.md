@@ -120,7 +120,7 @@ The calibration measures a **4-stage sequential pipeline**:
 Customize the number of phases, multipliers, durations, and oscillation bounds directly in `utilities/configuration.yml`; emitter picks them up through `phase_definitions` at runtime.
 
 **Autoscaling Requirements**:
-- Single worker capacity: 0.68 tasks/s (1 / 1.47s)
+- Single worker capacity: 0.67 tasks/s (1 / 1.5s)
 - Phase 2 peak: 7.5 tasks/s → **needs ~11 workers**
 
 ---
@@ -265,8 +265,8 @@ Configuration will be updated automatically!
 
 **Latest Calibration** (Oct 26, 2025):
 - Model: `time = 1.71e-07 × size² + 0.00167` seconds
-- Average processing: 1.47s (with 40% large + 40% extra-large images)
-- Worker capacity: 0.68 tasks/sec
+- Average processing: 1.5s
+- Worker capacity: 0.67 tasks/sec
 - Phase 2 peak load: 7.5 tasks/sec → **requires 11 workers**
 
 **Use this calibration to generate realistic workloads and validate autonomic scaling decisions!** 🚀
