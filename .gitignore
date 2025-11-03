@@ -8,6 +8,7 @@ autoscaling_env/rl/__pycache__
 autoscaling_env/rl/runs/
 autoscaling_env/baselines/plots/
 autoscaling_env/baselines/logs/
+autoscaling_env/runs/
 orchestrator/logs_farm
 # Ignore everything in the template directory
 openfaas-functions/template/*

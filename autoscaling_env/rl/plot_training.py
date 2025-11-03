@@ -42,17 +42,33 @@ def main() -> None:
     mean_qos = np.array([ep["mean_qos"] for ep in episodes])
     epsilons = np.array([ep["epsilon"] for ep in episodes])
 
+    def _smooth(values: np.ndarray, window: int) -> np.ndarray:
+        if values.size == 0 or window <= 1:
+            return values
+        window = min(window, values.size)
+        kernel = np.ones(window, dtype=np.float64) / window
+        return np.convolve(values, kernel, mode="same")
+
+    smooth_window = 0
+    if len(episodes) >= 3:
+        smooth_window = min(15, max(3, len(episodes) // 10 or 3))
+
+    rewards_smooth = _smooth(total_rewards, smooth_window) if smooth_window else total_rewards
+    qos_smooth = _smooth(mean_qos, smooth_window) if smooth_window else mean_qos
+
     fig, ax1 = plt.subplots(figsize=(12, 6))
     ax1.set_title("SARSA Training Curves")
     ax1.set_xlabel("Episode")
     ax1.set_ylabel("Total Reward", color="tab:blue")
-    ax1.plot(episode_numbers, total_rewards, color="tab:blue", label="Total Reward")
+    ax1.plot(episode_numbers, total_rewards, color="tab:blue", alpha=0.35, linewidth=1, label="Total Reward (raw)")
+    ax1.plot(episode_numbers, rewards_smooth, color="tab:blue", linewidth=2, label="Total Reward (smoothed)")
     ax1.tick_params(axis="y", labelcolor="tab:blue")
     ax1.grid(True, alpha=0.3)
 
     ax2 = ax1.twinx()
     ax2.set_ylabel("QoS Rate", color="tab:green")
-    ax2.plot(episode_numbers, mean_qos, color="tab:green", linestyle="--", label="Mean QoS")
+    ax2.plot(episode_numbers, mean_qos, color="tab:green", linestyle="--", alpha=0.35, linewidth=1, label="Mean QoS (raw)")
+    ax2.plot(episode_numbers, qos_smooth, color="tab:green", linestyle="--", linewidth=2, label="Mean QoS (smoothed)")
     ax2.tick_params(axis="y", labelcolor="tab:green")
 
     ax3 = ax1.twinx()
@@ -60,6 +76,14 @@ def main() -> None:
     ax3.set_ylabel("Epsilon", color="tab:red")
     ax3.plot(episode_numbers, epsilons, color="tab:red", linestyle=":", label="Epsilon")
     ax3.tick_params(axis="y", labelcolor="tab:red")
+
+    handles, labels = [], []
+    for axis in (ax1, ax2, ax3):
+        h, l = axis.get_legend_handles_labels()
+        handles.extend(h)
+        labels.extend(l)
+    if handles:
+        ax1.legend(handles, labels, loc="upper left", frameon=False)
 
     fig.tight_layout()
 

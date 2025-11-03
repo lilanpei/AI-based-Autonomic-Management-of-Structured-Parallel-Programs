@@ -12,9 +12,10 @@ produced by `utilities/configuration.yml`.
 | --- | --- |
 | `sarsa_agent.py` | Tabular SARSA agent with observation discretisation, epsilon decay, and persistence helpers. |
 | `train_sarsa.py` | Command-line training loop with logging, checkpointing, and metric export. |
-| `test_sarsa.py` | Deterministic policy roll-out for evaluation of a saved SARSA model. |
+| `test_sarsa.py` | Deterministic policy roll-out with run-directory logging and per-episode plotting. |
 | `plot_training.py` | Utility to regenerate training plots from stored metrics. |
 | `utils.py` | Shared helpers (discretisation factory, logging, run directory management, JSON export). |
+| `../compare_policies.py` | Compare trained SARSA against reactive baselines on a shared single-episode plot. |
 | `runs/` | Default output directory for experiments (ignored by git). |
 
 ## Prerequisites
@@ -95,6 +96,17 @@ python -m autoscaling_env.rl.test_sarsa \
 The evaluation script executes a greedy policy (always selecting the
 highest-valued action) and prints per-episode summaries. A JSON report is written
 via `--output` (default `runs/eval_results.json`).
+
+### Compare Against Reactive Baselines on a Single Episode
+
+```bash
+python -m autoscaling_env.compare_policies \
+  --model autoscaling_env/rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
+  --max-steps 40 \
+  --initial-workers 12
+```
+
+Creates a timestamped directory under `autoscaling_env/runs/comparison/` with combined per-step logs and a shared plot contrasting SARSA, ReactiveAverage, and ReactiveMaximum.
 
 ## Re-plotting Training Metrics
 

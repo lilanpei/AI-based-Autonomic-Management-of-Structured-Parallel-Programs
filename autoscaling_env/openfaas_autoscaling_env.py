@@ -5,13 +5,14 @@ Real deployment environment for RL-based autoscaling
 
 import os
 import sys
-import gym
+import gymnasium as gym
 import json
 import time
 import subprocess
 import numpy as np
-from gym import spaces
+from gymnasium import spaces
 from datetime import datetime
+from typing import Dict, List, Tuple, Optional
 from kubernetes import client, config
 
 # Add project root to path
@@ -79,7 +80,10 @@ class OpenFaaSAutoscalingEnv(gym.Env):
                  step_duration=10,  # seconds between actions
                  max_steps=50,
                  initial_workers=1,
-                 initialize_workflow=True):
+                 initialize_workflow=True,
+                 phase_shuffle=False,
+                 phase_shuffle_seed=None,
+                 task_seed=None):
         """
         Initialize the OpenFaaS autoscaling environment
 
@@ -102,6 +106,11 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         self.max_steps = max_steps
         self.initial_workers = initial_workers
         self.initialize_workflow = initialize_workflow
+        self.phase_shuffle = phase_shuffle
+        self.phase_shuffle_seed = phase_shuffle_seed
+        self.default_task_seed = task_seed
+        self._pending_task_seed: int | None = None
+        self._current_task_seed: int | None = task_seed
 
         # Define action/observation spaces immediately so agents can query bounds
         self.action_space = spaces.Discrete(3)
@@ -139,6 +148,13 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         # Reset program start time for new episode
         self.program_start_time = get_utc_now()
         print(f"[INFO] Set program_start_time to: {self.program_start_time}")
+
+        # Determine seed to use for this episode
+        if self._pending_task_seed is not None:
+            self._current_task_seed = int(self._pending_task_seed)
+        else:
+            self._current_task_seed = int(self.default_task_seed) if self.default_task_seed is not None else None
+        self._pending_task_seed = None
 
         # Reinitialize config with new program_start_time
         self.config = initialize_environment(self.program_start_time)
@@ -220,7 +236,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         # Generate tasks for this episode (Step 3)
         self.task_generation_start_time = (get_utc_now()-self.program_start_time).total_seconds()
         print(f"[INFO] Generating tasks for episode at {self.task_generation_start_time:.2f} seconds after program start")
-        self._generate_tasks()
+        self._generate_tasks(seed=self._current_task_seed)
         self.task_generation_end_time = (get_utc_now()-self.program_start_time).total_seconds()
 
         print(f"[INFO] Initial workers: {current_workers}")
@@ -233,11 +249,14 @@ class OpenFaaSAutoscalingEnv(gym.Env):
 
         return observation
 
-    def reset(self):
+    def reset(self, seed: int | None = None):
         """
         Reset environment to initial state for new episode.
         Uses the same logic as __init__() to ensure consistent timing.
         """
+        if seed is not None:
+            self._pending_task_seed = seed
+
         print("\n" + "="*70)
         print("RESETTING ENVIRONMENT FOR NEW EPISODE")
         print("="*70)
@@ -774,15 +793,15 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         reward_cfg = self.config.get("reward", {})
         weights = reward_cfg.get("weights", {})
 
-        qos_weight = float(weights.get("qos", 10.0))
-        queue_weight = float(weights.get("queue", 5.0))
-        worker_weight = float(weights.get("worker", 1.0))
-        scaling_weight = float(weights.get("scaling", 2.0))
-        idle_weight = float(weights.get("idle", 1.0))
+        qos_weight = float(weights.get("qos"))
+        queue_weight = float(weights.get("queue"))
+        worker_weight = float(weights.get("workers"))
+        scaling_weight = float(weights.get("scaling"))
+        idle_weight = float(weights.get("idle"))
 
-        target_qos = float(reward_cfg.get("target_qos", 0.9))
-        queue_target = max(float(reward_cfg.get("queue_target", 50.0)), 1.0)
-        idle_queue_threshold = float(reward_cfg.get("idle_queue_threshold", 1.0))
+        target_qos = float(reward_cfg.get("target_qos"))
+        queue_target = float(reward_cfg.get("queue_target"))
+        idle_queue_threshold = float(reward_cfg.get("idle_queue_threshold"))
 
         # QoS term: positive when meeting/exceeding target, negative otherwise
         qos_delta = qos_rate - target_qos
@@ -790,7 +809,11 @@ class OpenFaaSAutoscalingEnv(gym.Env):
 
         # Queue term: penalize backlog relative to target queue length
         queue_ratio = worker_q / queue_target
-        queue_penalty = -queue_weight * queue_ratio
+        queue_penalty = -queue_weight * max(0.0, queue_ratio - 1.0)
+
+        # Backlog amplification: when QoS is dropping, amplify penalty by backlog severity
+        backlog_amplifier = max(0.0, target_qos - qos_rate)
+        backlog_penalty = -queue_weight * backlog_amplifier * (1.0 + queue_ratio)
 
         # Worker term: penalize workers beyond the configured minimum
         worker_excess = max(0.0, workers - self.min_workers)
@@ -803,12 +826,19 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         # Idle term: discourage keeping many workers when the queue is empty
         idle_penalty = -idle_weight if worker_q <= idle_queue_threshold and workers > self.min_workers else 0.0
 
+        # Success bonus to counteract always-negative rewards when QoS is healthy and backlog low
+        success_bonus = 0.0
+        if qos_rate >= target_qos and worker_q <= queue_target * 0.5:
+            success_bonus = qos_weight * 0.1
+
         total_reward = (
             qos_reward +
             queue_penalty +
             worker_penalty +
             scaling_penalty +
-            idle_penalty
+            idle_penalty +
+            backlog_penalty +
+            success_bonus
         )
 
         return total_reward
@@ -836,7 +866,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         self.workflow_initialized = True
         print(f"[INFO] ✓ Workflow initialized successfully")
 
-    def _generate_tasks(self):
+    def _generate_tasks(self, seed: int | None = None):
         """
         Generate tasks for episode (Step 3 from workflow_controller.py)
         Runs task_generator.py to push phase configs to input_queue
@@ -853,22 +883,30 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             return
 
         # Get task generation parameters from config
-        base_rate = self.config.get("base_rate", 300)
-        phase_duration = self.config.get("phase_duration", 60)
-        window_duration = self.config.get("window_duration", 1)
+        base_rate = self.config.get("base_rate")
+        phase_definitions = self.config.get("phase_definitions")
+        total_generation_time = sum(int(phase.get("phase_duration", 0)) for phase in phase_definitions)
 
-        print(f"[INFO] Generating tasks (base_rate={base_rate}, phase_duration={phase_duration}, window={window_duration})...")
+        print(f"[INFO] Generating tasks (base_rate={base_rate}, total_generation_time={total_generation_time})...")
 
         # Set environment variable for task_generator.py
         env = os.environ.copy()
         env["START_TIMESTAMP"] = str(self.program_start_time)
+        if getattr(self, "phase_shuffle", False):
+            env["PHASE_SHUFFLE"] = "true"
+            if getattr(self, "phase_shuffle_seed", None) is not None:
+                env["PHASE_SHUFFLE_SEED"] = str(self.phase_shuffle_seed)
+        else:
+            env["PHASE_SHUFFLE"] = "false"
 
-        # Calculate timeout: 4 phases + buffer for processing
-        # Each phase takes phase_duration seconds, add buffer
+        if seed is not None:
+            env["TASK_GENERATOR_SEED"] = str(seed)
+
+        # Calculate timeout: total_generation_time + buffer for processing
         # More robust for any phase_duration
-        buffer = max(60, int(phase_duration * 4 * 0.25))  # 25% buffer, min 60s
-        timeout = (phase_duration * 4) + buffer
-        print(f"[INFO] Task generation timeout: {timeout}s (generation: {phase_duration*4}s + buffer: {buffer}s)")
+        buffer = max(60, int(total_generation_time * 0.25))  # 25% buffer, min 60s
+        timeout = total_generation_time + buffer
+        print(f"[INFO] Task generation timeout: {timeout}s (generation: {total_generation_time}s + buffer: {buffer}s)")
 
         try:
             result = subprocess.run(
@@ -913,6 +951,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             "calibrated_model_seed": self.config.get("calibrated_model")["seed"],
             "calibrated_model_r_squared": self.config.get("calibrated_model")["r_squared"],
             "base_rate": self.config.get("base_rate"),
+            "task_seed": self._current_task_seed,
         }
 
     def _wait_for_task_completion(self, timeout=300, check_interval=5):

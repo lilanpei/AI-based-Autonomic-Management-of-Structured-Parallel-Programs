@@ -56,9 +56,6 @@ class SARSAAgent:
         self._q_table = defaultdict(lambda: np.zeros(self.action_size, dtype=np.float32))
         self._epsilon = self.hyperparams.epsilon
 
-    # ------------------------------------------------------------------
-    # Discretization helpers
-    # ------------------------------------------------------------------
     def _build_bins(self) -> None:
         """Pre-compute bin edges for each observation dimension."""
         eps = 1e-6
@@ -92,9 +89,6 @@ class SARSAAgent:
                 indices.append(int(np.digitize(value, edges)))
         return tuple(indices)
 
-    # ------------------------------------------------------------------
-    # SARSA core
-    # ------------------------------------------------------------------
     def select_action(self, state: Tuple[int, ...]) -> int:
         """Return an action index using epsilon-greedy policy."""
         if np.random.random() < self._epsilon:
@@ -119,9 +113,6 @@ class SARSAAgent:
     def decay_epsilon(self) -> None:
         self._epsilon = max(self.hyperparams.epsilon_min, self._epsilon * self.hyperparams.epsilon_decay)
 
-    # ------------------------------------------------------------------
-    # Persistence & diagnostics
-    # ------------------------------------------------------------------
     @property
     def epsilon(self) -> float:
         return self._epsilon

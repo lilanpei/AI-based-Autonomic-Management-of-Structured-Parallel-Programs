@@ -29,32 +29,45 @@ This project implements an **RL-based autoscaling system** for serverless parall
 
 ```
 AI-based-Autonomic-Management-of-Structured-Parallel-Programs/
-├── openfaas-functions/       # OpenFaaS function implementations
-│   ├── emitter/              # Task generator (1 instance)
-│   ├── worker/               # Task processor (1-32 instances)
-│   ├── collector/            # Result aggregator (1 instance)
-│   ├── template/             # Custom python3-http-skeleton template
-│   └── stack.yaml            # Deployment configuration
-│
-├── autoscaling_env/          # RL environment and agents
-│   ├── baselines/                     # Reactive baseline policies
-│   │   ├── reactive_policies.py       # ReactiveAverage, ReactiveMaximum
-│   │   ├── test_reactive_baselines.py # Baseline testing (with optional horizon tuning)
-│   │   ├── plots/                     # Performance plots
-│   │   ├── logs/                      # Log files
-│   │   └── README.md                  # Baseline documentation
-│   ├── rl/                            # RL agents and training
-│   │   ├── sarsa_agent.py    # SARSA
-│   │   ├── train_sarsa.py    # Training script
-│   │   ├── test_sarsa.py     # Evaluation script
-│   │   ├── plot_training.py  # Training plotter
-│   │   ├── utils.py          # Utility functions
+├── autoscaling_env/                  # RL environment, baselines, comparison tooling
+│   ├── compare_policies.py           # Single-episode SARSA vs reactive comparison script
+│   ├── openfaas_autoscaling_env.py   # Gym-compatible OpenFaaS autoscaling environment
+│   ├── baselines/                    # Reactive baseline policies & docs
+│   │   ├── reactive_policies.py
+│   │   ├── test_reactive_baselines.py
+│   │   ├── logs/                     # Baseline evaluation logs (gitignored)
+│   │   ├── plots/                    # Baseline plots (gitignored)
 │   │   └── README.md
-│   └── openfaas_autoscaling_env.py    # Gym environment
-│
-└── utilities/                # Shared utilities
-    ├── utilities.py          # Deployment, scaling, monitoring
-    └── configuration.yml     # System configuration
+│   ├── rl/                           # SARSA training + evaluation toolkit
+│   │   ├── sarsa_agent.py
+│   │   ├── train_sarsa.py
+│   │   ├── test_sarsa.py             # Detailed logging & per-episode plotting
+│   │   ├── plot_training.py
+│   │   ├── utils.py
+│   │   └── README.md
+│   └── runs/                         # Timestamped evaluation/comparison outputs (gitignored)
+│       └── comparison/
+├── image_processing/                 # Workload calibration & task generation utilities
+│   ├── task_generator.py             # Phase-based arrival generator
+│   ├── calibrate_direct.py           # Image processing calibration pipeline
+│   ├── calibration_results.json
+│   ├── calibration_plot.png
+│   ├── task_arrival_rates.png
+│   └── README.md
+├── openfaas-functions/               # Deployed OpenFaaS functions
+│   ├── emitter/
+│   ├── worker/
+│   ├── collector/
+│   ├── template/                     # Custom python3-http-skeleton template
+│   └── stack.yaml
+├── openfaas/                         # OpenFaaS deployment manifests
+├── utilities/                        # Shared orchestration helpers
+│   ├── configuration.yml             # System/experiment configuration
+│   └── utilities.py
+├── plots/                            # Repository-level figures
+├── kind/                             # KIND cluster helpers
+├── cleanup.sh                        # Utility script for tearing down resources
+└── README.md                         # You are here
 ```
 
 ---
@@ -113,14 +126,28 @@ python test_reactive_baselines.py --agent both --steps 50 --step-duration 10 --h
 
 ```bash
 cd autoscaling_env/rl
-python train_sarsa.py --episodes 50 --max-steps 30 --step-duration 20
+python train_sarsa.py --episodes 50 --max-steps 30 --step-duration 20 --initial-workers 12
 ```
 
 ### **4. Evaluate Trained Model**
 
 ```bash
-python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
+python test_sarsa.py --model models/sarsa/sarsa_final.pkl --initial-workers 12 --compare-baselines
 ```
+
+---
+
+### **5. Plot Single-Episode Comparison (SARSA vs Baselines)**
+
+```bash
+cd autoscaling_env/rl
+python compare_policies.py \
+  --model rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
+  --initial-workers 12 \
+  --max-steps 40
+```
+
+Generates a shared-step comparison plot and detailed log under `autoscaling_env/runs/comparison/compare_<timestamp>/`.
 
 ---
 
@@ -147,11 +174,12 @@ python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
 - **Workload**: Task generator draws processing times from a gamma distribution (mean 1.5 s, shape 4.0 by default) and derives image sizes via the calibrated quadratic model
 - **Episode Termination**: Task-driven (ends when all tasks complete or max steps reached)
 
-### **3. SARSA**
+### **3. SARSA & Evaluation Toolkit**
 
 - **Algorithm**: On-policy TD control
 - **State Discretization**: Tile coding
 - **Exploration**: Epsilon-greedy
+- **Evaluation utilities**: `test_sarsa.py` now manages run directories, logging, and per-episode plots. `compare_policies.py` captures single-episode trajectories for SARSA and both reactive baselines on shared axes.
 
 ### **4. Baseline Policies**
 
@@ -221,10 +249,9 @@ python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
 
 Key parameters in `utilities/configuration.yml`:
 
-- **Workload**: `base_rate` (300 tasks/min), `phase_duration`, `number_of_phases`
-- **Phases**: `phase_definitions` list (multipliers, durations, patterns, oscillation bounds) consumed by `image_processing/task_generator.py`
-- **Scaling**: `min_workers` (1), `max_workers` (32), `initial_workers` (3)
-- **Environment**: `observation_window` (10s), `step_duration` (10s by default across scaling + observation), optional reactive `horizon`
+- **Workload**: `base_rate` (300 tasks/min), `phase_definitions` (list of per-phase multipliers, durations, oscillation controls) consumed by `image_processing/task_generator.py`
+- **Scaling**: `min_workers` (1), `max_workers` (32), `initial_workers` (12)
+- **Observation window**: `observation_window` (10s), `step_duration` (10s by default across scaling + observation), optional reactive `horizon`
 - **Processing time sampling**: `target_mean_processing_time` (default 1.5 s) and `processing_time_shape` (default 4.0) control gamma draws for image sizes in the function utilities
 - **Reward**: `reward` block with QoS target, queue target, idle threshold, and per-term weights
 - **QoS**: Task deadlines based on calibrated processing time model (DEADLINE_COEFFICIENT = 2.0)

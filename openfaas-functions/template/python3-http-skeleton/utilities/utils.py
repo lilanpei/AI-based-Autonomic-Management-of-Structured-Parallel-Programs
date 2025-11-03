@@ -176,13 +176,10 @@ def simulate_processing_time(image_size, calibrated_model_a, calibrated_model_b,
     # Calculate expected time using calibrated model
     expected_time = a * image_size**2 + b
 
-    # Add realistic variance (±10%)
-    actual_time = expected_time * random.uniform(0.9, 1.1)
-
     # Simulate processing
-    time.sleep(actual_time)
+    time.sleep(expected_time)
 
-    return actual_time
+    return expected_time
 
 def process_image_processing(task):
     """
@@ -422,6 +419,15 @@ def generate_tasks_for_phase(phase_config_data,
     Generate tasks for one phase with specific arrival pattern
     Uses controlled Poisson to hit exact target while maintaining variance
     """
+    seed_value = phase_config_data.get("task_seed") or os.getenv("TASK_GENERATOR_SEED")
+    if seed_value is not None:
+        try:
+            seed_int = int(seed_value)
+        except (TypeError, ValueError):
+            seed_int = hash(str(seed_value)) % (2**32)
+        random.seed(seed_int)
+        np.random.seed(seed_int)
+        logger.info(f"[SEED] Task generation RNG seeded with value {seed_int}")
     # Calculate exact target for this phase
     phase = phase_config_data.get("phase_number")
     phase_name = phase_config_data.get("phase_name")

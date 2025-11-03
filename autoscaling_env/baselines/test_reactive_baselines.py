@@ -15,6 +15,7 @@ Usage:
 import os
 import sys
 import argparse
+import random
 import numpy as np
 import time
 import matplotlib.pyplot as plt
@@ -59,7 +60,7 @@ class Tee:
         return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
 
 
-def test_single_agent(agent_name, agent, env, num_steps=20):
+def test_single_agent(agent_name, agent, env, num_steps=20, seed: int | None = None):
     """
     Test a single reactive baseline agent
 
@@ -75,7 +76,11 @@ def test_single_agent(agent_name, agent, env, num_steps=20):
 
     # Reset environment
     print("\n[1/3] Resetting environment...")
-    state = env.reset()
+    if seed is not None:
+        np.random.seed(seed)
+        random.seed(seed)
+
+    state = env.reset(seed=seed)
 
     print(f"✓ Initial state: {state}")
 
@@ -350,7 +355,7 @@ def plot_comparison(results_dict, save_dir='plots'):
     plt.close()
 
 
-def compare_agents(env, num_steps=20, planning_horizon=None):
+def compare_agents(env, num_steps=20, planning_horizon=None, seed: int | None = None):
     """
     Compare both reactive baseline agents
 
@@ -377,7 +382,7 @@ def compare_agents(env, num_steps=20, planning_horizon=None):
     # Test each agent
     results = {}
     for agent_name, agent in agents.items():
-        results[agent_name] = test_single_agent(agent_name, agent, env, num_steps)
+        results[agent_name] = test_single_agent(agent_name, agent, env, num_steps, seed=seed)
 
     # Print comparison
     print("\n" + "="*70)
@@ -446,6 +451,10 @@ def main():
                         help='Total step duration in seconds (includes scaling + get observation 2~7s)')
     parser.add_argument('--horizon', type=float, default=None,
                         help='Planning horizon in seconds for reactive policies (defaults to step-duration)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Global RNG seed for reproducible baselines')
+    parser.add_argument('--task-seed', type=int, default=42,
+                        help='Seed passed to task generator (defaults to --seed)')
 
     args = parser.parse_args()
     original_stdout = sys.stdout
@@ -467,6 +476,11 @@ def main():
         print("REACTIVE BASELINE TEST")
         print("="*70)
         planning_horizon = args.horizon if args.horizon and args.horizon > 0 else args.step_duration
+        base_seed = args.seed
+        task_seed = args.task_seed if args.task_seed is not None else base_seed
+
+        np.random.seed(base_seed)
+        random.seed(base_seed)
 
         print(f"Agent:         {args.agent}")
         print(f"Steps:         {args.steps}")
@@ -474,6 +488,8 @@ def main():
         print(f"Max Workers:   {args.max_workers}")
         print(f"Step Duration: {args.step_duration}s")
         print(f"Planning Horizon: {planning_horizon}s")
+        print(f"Seed:          {base_seed}")
+        print(f"Task Seed:     {task_seed}")
         print("="*70)
 
         # Initialize environment
@@ -489,7 +505,8 @@ def main():
                 step_duration=args.step_duration,
                 max_steps=args.steps,
                 initial_workers=args.initial_workers,
-                initialize_workflow=False  # Deploy emitter/collector/workers
+                initialize_workflow=False,  # Deploy emitter/collector/workers
+                task_seed=task_seed,
             )
             print("✓ Environment initialized successfully")
         except Exception as e:
@@ -506,7 +523,7 @@ def main():
         # Run tests
         try:
             if args.agent == 'both':
-                compare_agents(env, args.steps, planning_horizon)
+                compare_agents(env, args.steps, planning_horizon, seed=base_seed)
             else:
                 if args.agent == 'average':
                     agent = ReactiveAverage()
@@ -518,7 +535,7 @@ def main():
                 if hasattr(agent, 'set_horizon'):
                     agent.set_horizon(planning_horizon)
 
-                results = test_single_agent(agent_name, agent, env, args.steps)
+                results = test_single_agent(agent_name, agent, env, args.steps, seed=base_seed)
 
                 # Generate plot for single agent
                 print("\n[PLOTTING] Generating visualization...")

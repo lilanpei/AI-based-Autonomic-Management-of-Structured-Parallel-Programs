@@ -15,10 +15,11 @@ autoscaling_env/
 ├── rl/                            # RL agents and training
 │   ├── sarsa_agent.py    # SARSA
 │   ├── train_sarsa.py    # Training script
-│   ├── test_sarsa.py     # Evaluation script
+│   ├── test_sarsa.py     # Evaluation script (per-episode plots + logging)
 │   ├── plot_training.py  # Training plotter
 │   ├── utils.py          # Utility functions
 │   └── README.md
+├── compare_policies.py            # Single-episode SARSA vs reactive comparison
 └── openfaas_autoscaling_env.py    # Main Gym environment (9D observation)
 ```
 
@@ -75,7 +76,7 @@ python test_reactive_baselines.py --agent both --steps 50 --step-duration 10 --h
 
 ```bash
 cd rl
-python train_sarsa.py --episodes 50 --max-steps 30 --step-duration 20
+python train_sarsa.py --episodes 50 --max-steps 30 --step-duration 20 --initial-workers 12
 ```
 
 **Output**: Model saved to `models/sarsa/sarsa_final.pkl`
@@ -83,10 +84,21 @@ python train_sarsa.py --episodes 50 --max-steps 30 --step-duration 20
 ### **3. Evaluate Trained Model**
 
 ```bash
-python test_sarsa.py --model models/sarsa/sarsa_final.pkl --compare-baselines
+python test_sarsa.py --model models/sarsa/sarsa_final.pkl --initial-workers 12 --compare-baselines
 ```
 
-**Output**: Comparison table and plots in `plots/`
+**Output**: Timestamped run directory with logs, plots, and metrics under `runs/`
+
+### **4. Compare SARSA with Reactive Baselines on a Single Episode**
+
+```bash
+python compare_policies.py \
+  --model rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
+  --initial-workers 12 \
+  --max-steps 40
+```
+
+**Output**: Per-step logs for SARSA, ReactiveAverage, and ReactiveMaximum plus a shared comparison plot under `autoscaling_env/runs/comparison/compare_<timestamp>/`
 
 ---
 

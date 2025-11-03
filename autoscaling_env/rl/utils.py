@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -31,7 +31,7 @@ def prepare_output_directory(base_dir: Path | str) -> Path:
     """Create an experiment directory for logs, models, and plots."""
 
     base_path = Path(base_dir)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     experiment_dir = base_path / f"sarsa_run_{timestamp}"
     (experiment_dir / "logs").mkdir(parents=True, exist_ok=True)
     (experiment_dir / "models").mkdir(exist_ok=True)

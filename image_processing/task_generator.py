@@ -21,6 +21,7 @@ import json
 import uuid
 import redis
 import random
+from copy import deepcopy
 import numpy as np
 from datetime import datetime
 
@@ -315,6 +316,30 @@ def generate_tasks_for_phase(phase, phase_name, base_rate, phase_duration, windo
     return total_tasks_generated
 
 
+def shuffle_phases(phases):
+    """Optionally shuffle phases using environment-provided controls."""
+    shuffle_flag = os.getenv("PHASE_SHUFFLE", "false").lower() in {"1", "true", "yes"}
+    if not shuffle_flag:
+        return phases
+
+    canonical_only = os.getenv("PHASE_SHUFFLE_CANONICAL_ONLY", "false").lower() in {"1", "true", "yes"}
+    if canonical_only:
+        return phases
+
+    seed_value = os.getenv("PHASE_SHUFFLE_SEED")
+    rng = random.Random()
+    if seed_value is not None:
+        try:
+            rng.seed(int(seed_value))
+        except ValueError:
+            rng.seed(seed_value)
+
+    shuffled = deepcopy(phases)
+    rng.shuffle(shuffled)
+    print("[INFO] Phase order shuffled for this run via task generator")
+    return shuffled
+
+
 def generate_phase_configs():
     """Generate phase configuration objects using configuration.yml definitions."""
     config = get_config()
@@ -326,7 +351,7 @@ def generate_phase_configs():
         raise ValueError("phase_definitions missing from configuration.yml")
 
     phases = []
-    for _ , phase_cfg in enumerate(configured_phases):
+    for _ , phase_cfg in enumerate(shuffle_phases(configured_phases)):
         multiplier = phase_cfg.get("phase_multiplier")
         duration = int(phase_cfg.get("phase_duration"))
         window = int(phase_cfg.get("window_duration"))

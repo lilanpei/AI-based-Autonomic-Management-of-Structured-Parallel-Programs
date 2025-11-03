@@ -4,6 +4,8 @@ import json
 import time
 import logging
 import traceback
+import random
+import numpy as np
 from datetime import datetime
 from utils import (
     get_redis_client,
@@ -26,6 +28,16 @@ def handle(event, context):
     body = parse_request_body(event)
     if not body:
         return {"statusCode": 400, "body": "Invalid JSON in request body."}
+
+    seed_value = body.get("task_seed") or os.getenv("TASK_GENERATOR_SEED")
+    if seed_value is not None:
+        try:
+            seed_int = int(seed_value)
+        except (TypeError, ValueError):
+            seed_int = hash(str(seed_value)) % (2**32)
+        random.seed(seed_int)
+        np.random.seed(seed_int)
+        logger.info(f"[SEED] Emitter RNG seeded with value {seed_int}")
 
     input_q, worker_q = body.get('input_queue_name'), body.get('worker_queue_name')
     control_syn_q, start_q = body.get('emitter_control_syn_queue_name'), body.get('emitter_start_queue_name')
