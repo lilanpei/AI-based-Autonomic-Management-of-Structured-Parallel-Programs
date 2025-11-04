@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Compare a trained SARSA agent with reactive baselines on a single episode."""
 
-from __future__ import annotations
-
 import argparse
+import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterable, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -42,6 +41,113 @@ class Tee:
     def flush(self) -> None:
         for stream in self.streams:
             stream.flush()
+
+
+AGGREGATED_FILENAME = "aggregated_results.json"
+
+METRIC_LABELS = {
+    "total_reward": "Total Reward",
+    "final_qos_total": "Final QoS (tasks)",
+    "scaling_actions": "Scaling Actions",
+    "max_workers": "Max Workers",
+}
+
+AGENT_ALIAS_MAP = {
+    "sarsa": "SARSA",
+    "agent": "SARSA",
+    "reactiveaverage": "ReactiveAverage",
+    "reactiveavg": "ReactiveAverage",
+    "reactiveaveragepolicy": "ReactiveAverage",
+    "reactivemaximum": "ReactiveMaximum",
+    "reactivemax": "ReactiveMaximum",
+    "reactivemaximumpolicy": "ReactiveMaximum",
+}
+
+
+def _normalize_agent_token(name: str) -> str:
+    return name.strip().lower().replace(" ", "").replace("-", "").replace("_", "")
+
+
+def normalize_agent_names(requested: Optional[List[str]], available: Iterable[str]) -> List[str]:
+    available_list = list(available)
+    if not requested:
+        return available_list
+
+    available_set = set(available_list)
+    resolved: List[str] = []
+    for raw in requested:
+        token = _normalize_agent_token(raw)
+        mapped = AGENT_ALIAS_MAP.get(token)
+        if mapped is None:
+            # Try exact case-insensitive match against available agents
+            for candidate in available_list:
+                if token == _normalize_agent_token(candidate):
+                    mapped = candidate
+                    break
+        if mapped is None:
+            raise ValueError(
+                f"Unknown agent name '{raw}'. Available options: {', '.join(available_list)}"
+            )
+        if mapped not in resolved:
+            resolved.append(mapped)
+
+    missing = [name for name in resolved if name not in available_set]
+    if missing:
+        raise ValueError(
+            f"Requested agents not present in results: {', '.join(missing)}"
+        )
+
+    return resolved
+
+
+def _ensure_serializable(value):
+    if isinstance(value, dict):
+        return {key: _ensure_serializable(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_ensure_serializable(item) for item in value]
+    if isinstance(value, tuple):
+        return [_ensure_serializable(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    return value
+
+
+def save_aggregated_results(path: Path, aggregated: Dict[str, Dict[str, object]]) -> None:
+    payload = {"agents": _ensure_serializable(aggregated)}
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def load_aggregated_results(path: Path) -> Dict[str, Dict[str, object]]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, dict) and "agents" in data:
+        data = data["agents"]
+    if not isinstance(data, dict):
+        raise ValueError("Aggregated results JSON must be an object containing agent entries")
+    return data
+
+
+def print_agent_summaries(aggregated: Dict[str, Dict[str, object]], agent_order: List[str]) -> None:
+    for agent_name in agent_order:
+        agent_data = aggregated.get(agent_name)
+        if not agent_data:
+            continue
+        summary = agent_data.get("summary", {})
+        print(f"[SUMMARY] {agent_name}")
+        for key, label in METRIC_LABELS.items():
+            metric = summary.get(key, {"mean": 0.0, "std": 0.0})
+            mean_value = float(metric.get("mean", 0.0))
+            std_value = float(metric.get("std", 0.0))
+            if key == "final_qos_total":
+                mean_str = f"{mean_value:.2%}"
+                std_str = f"{std_value:.2%}"
+            else:
+                mean_str = f"{mean_value:.2f}"
+                std_str = f"{std_value:.2f}"
+            print(f"  - {label}: {mean_str} ± {std_str}")
 
 
 def run_sarsa_episode(
@@ -208,11 +314,22 @@ def run_reactive_episode(
     scaling_actions = int(sum(1 for a in actions if a != 1))
     noop_actions = int(sum(1 for a in actions if a == 1))
 
+    task_history = getattr(env, "task_history", [])
+    if task_history:
+        qos_successes = sum(1 for _, _, success in task_history if success)
+        final_qos_total = qos_successes / len(task_history)
+    else:
+        final_qos_total = 1.0
+
+    max_workers = max(worker_counts) if worker_counts else float(getattr(env, "initial_workers", 0))
+
     print(f"Total Steps:        {total_steps}")
     print(f"Total Reward:       {total_reward:.2f}")
     print(f"Mean Reward:        {mean_reward:.2f} ± {std_reward:.2f}")
     print(f"Mean QoS Rate:      {mean_qos:.2%}")
+    print(f"Final QoS (tasks):  {final_qos_total:.2%}")
     print(f"Mean Workers:       {mean_workers:.1f}")
+    print(f"Max Workers:        {max_workers:.1f}")
     print(f"Scaling Actions:    {scaling_actions}")
     print(f"No-op Actions:      {noop_actions}")
     print("=" * 70)
@@ -231,7 +348,9 @@ def run_reactive_episode(
             "total_reward": total_reward,
             "mean_reward": mean_reward,
             "mean_qos": mean_qos,
+            "final_qos_total": final_qos_total,
             "mean_workers": mean_workers,
+            "max_workers": max_workers,
             "scaling_actions": scaling_actions,
             "noop_actions": noop_actions,
         },
@@ -251,29 +370,31 @@ def collect_step_series(
     return step_data
 
 
-def compute_agent_summary(records: List[Dict[str, List[float]]]) -> Dict[str, float]:
-    total_rewards = []
-    mean_rewards = []
-    mean_qos_rates = []
-    final_qos_rates = []
+def _compute_mean_std(values: List[float]) -> Dict[str, float]:
+    if not values:
+        return {"mean": 0.0, "std": 0.0}
+    return {
+        "mean": float(np.mean(values)),
+        "std": float(np.std(values)) if len(values) > 1 else 0.0,
+    }
+
+
+def compute_agent_summary(records: List[Dict[str, List[float]]]) -> Dict[str, Dict[str, float]]:
+    metrics = {
+        "total_reward": [],
+        "final_qos_total": [],
+        "scaling_actions": [],
+        "max_workers": [],
+    }
 
     for record in records:
-        rewards = record.get("rewards", [])
-        qos_rates = record.get("qos_rates", [])
+        summary = record.get("summary", {})
+        for key in metrics:
+            value = summary.get(key)
+            if value is not None:
+                metrics[key].append(float(value))
 
-        if rewards:
-            total_rewards.append(np.sum(rewards))
-            mean_rewards.append(np.mean(rewards))
-        if qos_rates:
-            mean_qos_rates.append(np.mean(qos_rates))
-            final_qos_rates.append(qos_rates[-1])
-
-    return {
-        "mean_total_reward": float(np.mean(total_rewards)) if total_rewards else 0.0,
-        "mean_reward": float(np.mean(mean_rewards)) if mean_rewards else 0.0,
-        "mean_qos": float(np.mean(mean_qos_rates)) if mean_qos_rates else 0.0,
-        "mean_final_qos": float(np.mean(final_qos_rates)) if final_qos_rates else 0.0,
-    }
+    return {key: _compute_mean_std(values) for key, values in metrics.items()}
 
 
 def plot_step_boxplots(
@@ -368,7 +489,7 @@ def plot_step_boxplots(
         ax.grid(True, alpha=0.3)
         if handles:
             unique_handles = {handle.get_label(): handle for handle in handles}
-            ax.legend(unique_handles.values(), unique_handles.keys(), loc="upper right", frameon=False)
+            ax.legend(unique_handles.values(), unique_handles.keys(), loc="best", frameon=False)
 
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -376,17 +497,79 @@ def plot_step_boxplots(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", type=Path, required=True, help="Path to trained SARSA model (.pkl)")
-    parser.add_argument("--max-steps", type=int, default=31, help="Max steps per episode")
+    parser.add_argument(
+        "--model",
+        type=Path,
+        help="Path to trained SARSA model (.pkl). Required unless --plot-only is used.",
+    )
+    parser.add_argument("--max-steps", type=int, default=30, help="Max steps per episode")
     parser.add_argument("--step-duration", type=int, default=8, help="Seconds per environment step")
     parser.add_argument("--initial-workers", type=int, default=12, help="Initial workers (match training/eval setup)")
     parser.add_argument("--output-dir", type=Path, default=Path("runs/comparison"), help="Directory for outputs")
     parser.add_argument("--phase-shuffle", action="store_true", help="Enable phase shuffling during comparison")
-    parser.add_argument("--phase-shuffle-seed", type=int, default=123, help="RNG seed when shuffling phases")
+    parser.add_argument("--phase-shuffle-seed", type=int, default=42, help="RNG seed when shuffling phases")
     parser.add_argument("--episodes", type=int, default=10, help="Number of episodes per policy")
     parser.add_argument("--seed", type=int, default=42, help="Base random seed for reproducibility")
     parser.add_argument("--task-seed", type=int, default=42, help="Seed passed to task generator (defaults to --seed)")
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Skip new simulations and regenerate plots/summaries from an existing comparison directory",
+    )
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        default=None,
+        help="Existing comparison directory containing comparison.log and aggregated results (used with --plot-only)",
+    )
+    parser.add_argument(
+        "--agents",
+        nargs="+",
+        default=None,
+        help="Subset of agents to include in plots/summaries (e.g. 'agent reactiveaverage')",
+    )
     args = parser.parse_args()
+
+    if args.plot_only:
+        run_dir = args.input_dir
+        if run_dir is None:
+            parser.error("--plot-only requires --input-dir pointing to an existing comparison directory")
+        if not run_dir.exists():
+            raise FileNotFoundError(f"Comparison directory not found: {run_dir}")
+
+        aggregated_path = run_dir / AGGREGATED_FILENAME
+        if not aggregated_path.exists():
+            raise FileNotFoundError(
+                f"Aggregated results not found at {aggregated_path}. Rerun comparison with the updated script to create it."
+            )
+
+        aggregated = load_aggregated_results(aggregated_path)
+        if not aggregated:
+            raise ValueError(f"Aggregated results file {aggregated_path} does not contain any agent data")
+
+        selected_agents = normalize_agent_names(args.agents, aggregated.keys())
+        if not selected_agents:
+            raise ValueError("No agents selected for plotting")
+
+        records_by_agent = {
+            agent: aggregated[agent].get("records", []) for agent in selected_agents if agent in aggregated
+        }
+        if not any(records_by_agent.values()):
+            raise ValueError("Aggregated results do not contain step records for the requested agents")
+
+        plot_path = run_dir / "comparison_boxplots.png"
+        plot_step_boxplots(records_by_agent, plot_path)
+        print_agent_summaries(aggregated, selected_agents)
+
+        log_path = run_dir / "comparison.log"
+        if log_path.exists():
+            print(f"[INFO] Using existing log at {log_path}")
+        print(f"[PLOT] Saved comparison to {plot_path}")
+        print(f"[INFO] Loaded aggregated results from {aggregated_path}")
+        return
+
+    if args.model is None:
+        parser.error("--model is required unless --plot-only is specified")
 
     timestamp = get_utc_now().strftime("%Y%m%d_%H%M%S")
     output_dir = args.output_dir / f"compare_{timestamp}"
@@ -402,6 +585,8 @@ def main() -> None:
         sys.stderr = tee
 
         env = None
+        aggregated: Dict[str, Dict[str, object]] = {}
+
         try:
             print(f"[INFO] Comparison output directory: {output_dir}")
             print(f"[INFO] Log file: {log_path}")
@@ -425,8 +610,6 @@ def main() -> None:
                     phase_shuffle_seed=args.phase_shuffle_seed,
                     task_seed=task_seed,
                 )
-
-            aggregated: Dict[str, Dict[str, object]] = {}
 
             # Evaluate SARSA agent
             env = create_env()
@@ -489,16 +672,40 @@ def main() -> None:
                 finally:
                     env.close()
 
+            metric_labels = {
+                "total_reward": "Total Reward",
+                "final_qos_total": "Final QoS (tasks)",
+                "scaling_actions": "Scaling Actions",
+                "max_workers": "Max Workers",
+            }
+
             for agent_name, data in aggregated.items():
                 summary = data["summary"]
-                print(
-                    f"[SUMMARY] {agent_name}: mean_total_reward={summary['mean_total_reward']:.2f}, "
-                    f"mean_reward={summary['mean_reward']:.2f}, "
-                    f"mean_qos={summary['mean_qos']:.2%}, "
-                    f"final_qos={summary['mean_final_qos']:.2%}"
-                )
+                print(f"[SUMMARY] {agent_name}")
+                for key, label in metric_labels.items():
+                    metric = summary.get(key, {"mean": 0.0, "std": 0.0})
+                    mean_value = metric.get("mean", 0.0)
+                    std_value = metric.get("std", 0.0)
 
-            plot_step_boxplots({name: data["records"] for name, data in aggregated.items()}, plot_path)
+                    if key == "final_qos_total":
+                        mean_str = f"{mean_value:.2%}"
+                        std_str = f"{std_value:.2%}"
+                    else:
+                        mean_str = f"{mean_value:.2f}"
+                        std_str = f"{std_value:.2f}"
+
+                    print(f"  - {label}: {mean_str} ± {std_str}")
+
+            save_aggregated_results(output_dir / AGGREGATED_FILENAME, aggregated)
+
+            selected_agents = normalize_agent_names(args.agents, aggregated.keys())
+            if not selected_agents:
+                raise ValueError("No agents selected for plotting")
+
+            records_by_agent = {name: aggregated[name]["records"] for name in selected_agents}
+            plot_step_boxplots(records_by_agent, plot_path)
+            print_agent_summaries(aggregated, selected_agents)
+            print(f"[INFO] Aggregated results saved to {output_dir / AGGREGATED_FILENAME}")
             print(f"[PLOT] Saved comparison to {plot_path}")
         finally:
             if env is not None:

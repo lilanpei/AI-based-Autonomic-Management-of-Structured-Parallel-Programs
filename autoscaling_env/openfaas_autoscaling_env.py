@@ -115,9 +115,30 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         # Define action/observation spaces immediately so agents can query bounds
         self.action_space = spaces.Discrete(3)
         self.action_map = {0: -1, 1: 0, 2: +1}
+        # Bounds derived from recent training history (runs/sarsa_run_20251104_012016)
         self.observation_space = spaces.Box(
-            low=np.array([0, 0, 0, 0, self.min_workers, 0, 0, 0, 0], dtype=np.float32),
-            high=np.array([10000, 10000, 10000, 10000, self.max_workers, 10, 10, 100, 1.0], dtype=np.float32),
+            low=np.array([
+                0.0,  # input_queue_length
+                0.0,  # worker_queue_length
+                0.0,  # result_queue_length
+                0.0,  # output_queue_length
+                float(self.min_workers),
+                0.0,  # avg_processing_time
+                0.0,  # max_processing_time
+                0.0,  # arrival_rate
+                0.0,  # qos_success_rate
+            ], dtype=np.float32),
+            high=np.array([
+                3.0,    # input_queue_length (observed max ~3)
+                800.0,  # worker_queue_length (observed max ~556)
+                10.0,   # result_queue_length (observed max ~3)
+                1140.0, # output_queue_length (observed max ~1140)
+                float(self.max_workers),
+                150.0,  # avg_processing_time (observed max ~143)
+                160.0,  # max_processing_time (observed max ~146)
+                12.0,   # arrival_rate (observed max ~10.3)
+                1.0,    # qos_success_rate
+            ], dtype=np.float32),
             dtype=np.float32
         )
 
@@ -169,6 +190,11 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         self.total_reward = 0
         self.total_qos_violations = 0
         self.total_scaling_actions = 0
+        self._last_qos_rate = 1.0
+        self._last_worker_queue = 0.0
+        self._episode_final_qos = None
+        self._scale_up_credit = 0
+        self._scale_up_credit_strength = 0.0
 
         # Reset task generation timing markers
         self.task_generation_start_time = 0.0
@@ -284,13 +310,14 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         self.current_step += 1
         step_start_time = time.time()
 
-        # Map action to scaling delta
-        delta = self.action_map[action]
+        # Map action to requested scaling delta
+        requested_delta = int(self.action_map[action])
+        applied_delta = 0
 
         print(f"\n{'='*70}")
         print(f"STEP {self.current_step}/{self.max_steps}")
         print(f"{'='*70}")
-        print(f"[ACTION] Scaling action: {delta:+d}")
+        print(f"[ACTION] Requested scaling action: {requested_delta:+d}")
 
         # Get current state before action
         queue_before = self.redis_client.llen(self.config.get("worker_queue_name"))
@@ -305,11 +332,20 @@ class OpenFaaSAutoscalingEnv(gym.Env):
 
         # Execute scaling action and measure time
         scaling_start = time.time()
-        if delta != 0:
-            self._execute_scaling_action(delta, workers_before)
-            self.total_scaling_actions += 1
+        if requested_delta != 0:
+            applied_delta = self._execute_scaling_action(requested_delta, workers_before)
+            if applied_delta != 0:
+                self.total_scaling_actions += 1
+            else:
+                print("[INFO] Scaling request resulted in no replica change")
         else:
             print("[INFO] No scaling action (delta=0)")
+            applied_delta = 0
+
+        if applied_delta != requested_delta:
+            print(f"[ACTION] Effective delta after bounds: {applied_delta:+d}")
+
+        delta = applied_delta
         scaling_time = time.time() - scaling_start
 
         # Wait for remaining step duration to observe effects
@@ -330,14 +366,34 @@ class OpenFaaSAutoscalingEnv(gym.Env):
 
         # Calculate reward
         reward = self._calculate_reward(observation, delta)
-        self.total_reward += reward
 
         # Check if episode is done
         # Episode ends when: (1) max steps reached OR (2) all tasks completed
         done = self._check_episode_done(observation)
 
-        # If episode is done, wait for all tasks to complete
+        reward_cfg = self.config.get("reward", {})
+        unfinished_penalty_scale = float(reward_cfg.get("unfinished_penalty"))
+        completion_bonus = float(reward_cfg.get("completion_bonus"))
+        queue_target = float(reward_cfg.get("queue_target"))
+        penalty_scale = float(reward_cfg.get("penalty_scale"))
+
+        # If episode is done, optionally adjust reward and wait for tasks to complete
         if done:
+            pending_tasks = int(observation[0] + observation[1] + observation[2])
+            if self.current_step >= self.max_steps:
+                if unfinished_penalty_scale > 0 and pending_tasks > 0:
+                    pending_capped = min(pending_tasks, queue_target)
+                    penalty = penalty_scale * unfinished_penalty_scale * pending_capped
+                    reward -= penalty
+                    print(
+                        f"[REWARD] Applied unfinished-task penalty: -{penalty:.2f} "
+                        f"({pending_capped} capped tasks × {unfinished_penalty_scale:.2f})"
+                    )
+            else:
+                if completion_bonus > 0:
+                    reward += completion_bonus
+                    print(f"[REWARD] Applied early completion bonus: +{completion_bonus:.2f}")
+
             if self.current_step >= self.max_steps:
                 print(f"[INFO] Episode finished: Max steps ({self.max_steps}) reached")
             else:
@@ -345,14 +401,24 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             print(f"[INFO] Waiting for all tasks to complete...")
             self._wait_for_task_completion()
 
+            self._episode_final_qos = self._calculate_episode_qos()
+            print(f"[METRICS] Episode final QoS over processed tasks: {self._episode_final_qos:.4f}")
+        else:
+            self._episode_final_qos = None
+
+        self.total_reward += reward
+
         step_duration = time.time() - step_start_time
 
         # Additional info
+        episode_final_qos = self._episode_final_qos if done else None
         info = {
             'step': self.current_step,
             'queue_length': observation[1],  # worker_queue
             'workers': observation[4],
             'qos_rate': observation[8],
+            'requested_delta': requested_delta,
+            'applied_delta': delta,
             'total_reward': self.total_reward,
             'scaling_actions': self.total_scaling_actions,
             'qos_violations': self.total_qos_violations,
@@ -360,7 +426,9 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             'step_duration': step_duration,
             'program_start_time': self.program_start_time,
             'task_generation_start_time': self.task_generation_start_time,
-            'task_generation_end_time': self.task_generation_end_time
+            'task_generation_end_time': self.task_generation_end_time,
+            'episode_final_qos': episode_final_qos,
+            'processed_tasks': len(self.task_history),
         }
 
         print(f"[REWARD] {reward:.2f} | Total: {self.total_reward:.2f}")
@@ -431,7 +499,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         return target_tasks
 
     def _execute_scaling_action(self, delta, current_workers):
-        """Execute scaling action (scale up or down)"""
+        """Execute scaling action (scale up or down) and return applied delta."""
         # Convert to native Python int (avoid numpy types for K8s API)
         current_workers = int(current_workers)
         delta = int(delta)
@@ -441,7 +509,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
 
         if actual_delta == 0:
             print(f"[INFO] Scaling capped at boundaries (min={self.min_workers}, max={self.max_workers})")
-            return
+            return 0
 
         print(f"[SCALING] {current_workers} → {new_workers} (delta: {actual_delta:+d})")
 
@@ -450,11 +518,12 @@ class OpenFaaSAutoscalingEnv(gym.Env):
                 self._scale_up(current_workers, actual_delta)
             else:
                 self._scale_down(current_workers, abs(actual_delta))
+            return actual_delta
         except Exception as e:
             print(f"[ERROR] Scaling failed: {e}")
             import traceback
             traceback.print_exc()
-
+            return 0
     def _scale_up(self, current, delta):
         """
         Scale up workers (matches worker_scaler.py logic)
@@ -680,6 +749,21 @@ class OpenFaaSAutoscalingEnv(gym.Env):
                     max_ts = max(recent_timestamps)
                     print(f"[METRICS] Collected {new_tasks_found} new tasks (timestamps: {min_ts:.1f} - {max_ts:.1f})")
 
+    def _calculate_episode_qos(self) -> float:
+        total_tasks = len(self.task_history)
+        if total_tasks == 0:
+            return 1.0
+        successful_tasks = total_tasks - self.total_qos_violations
+        return float(successful_tasks) / float(total_tasks)
+
+    def get_episode_final_qos(self) -> float | None:
+        """Return the QoS success rate for all tasks seen this episode."""
+        if self._episode_final_qos is not None:
+            return self._episode_final_qos
+        if self.task_history:
+            return self._calculate_episode_qos()
+        return None
+
     def _get_observation(self):
         """Get current observation vector"""
         current_time = time.time()
@@ -780,7 +864,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         from configuration under the ``reward`` section:
 
         ``reward``
-            ``target_qos``: Desired QoS threshold (default 0.9)
+            ``target_qos``: Desired QoS threshold (default 0.95)
             ``queue_target``: Preferred worker queue length (default 50)
             ``idle_queue_threshold``: Queue length considered "idle" (default 1)
             ``weights``: Dict with keys ``qos``, ``queue``, ``worker``, ``scaling``, ``idle``
@@ -795,13 +879,23 @@ class OpenFaaSAutoscalingEnv(gym.Env):
 
         qos_weight = float(weights.get("qos"))
         queue_weight = float(weights.get("queue"))
+        backlog_weight = float(weights.get("backlog", queue_weight))
         worker_weight = float(weights.get("workers"))
         scaling_weight = float(weights.get("scaling"))
         idle_weight = float(weights.get("idle"))
 
         target_qos = float(reward_cfg.get("target_qos"))
         queue_target = float(reward_cfg.get("queue_target"))
+        penalty_scale = float(reward_cfg.get("penalty_scale"))
+        queue_relief_weight = float(reward_cfg.get("queue_relief_weight"))
+        scale_up_credit_steps = int(reward_cfg.get("scale_up_credit_steps"))
+        scale_up_credit_scale = float(reward_cfg.get("scale_up_credit_scale"))
         idle_queue_threshold = float(reward_cfg.get("idle_queue_threshold"))
+        scaling_tolerance = float(reward_cfg.get("scaling_tolerance"))
+        success_bonus_scale = float(reward_cfg.get("success_bonus_scale"))
+        success_bonus_bias = float(reward_cfg.get("success_bonus_bias"))
+        backlog_relief_weight = float(reward_cfg.get("backlog_relief_weight"))
+        qos_recovery_weight = float(reward_cfg.get("qos_recovery_weight"))
 
         # QoS term: positive when meeting/exceeding target, negative otherwise
         qos_delta = qos_rate - target_qos
@@ -809,27 +903,61 @@ class OpenFaaSAutoscalingEnv(gym.Env):
 
         # Queue term: penalize backlog relative to target queue length
         queue_ratio = worker_q / queue_target
-        queue_penalty = -queue_weight * max(0.0, queue_ratio - 1.0)
+        queue_penalty = -penalty_scale * queue_weight * max(0.0, queue_ratio - 1.0)
 
         # Backlog amplification: when QoS is dropping, amplify penalty by backlog severity
         backlog_amplifier = max(0.0, target_qos - qos_rate)
-        backlog_penalty = -queue_weight * backlog_amplifier * (1.0 + queue_ratio)
+        backlog_penalty = -penalty_scale * backlog_weight * backlog_amplifier * (1.0 + queue_ratio)
 
         # Worker term: penalize workers beyond the configured minimum
         worker_excess = max(0.0, workers - self.min_workers)
         worker_span = max(1.0, self.max_workers - self.min_workers)
-        worker_penalty = -worker_weight * (worker_excess / worker_span)
+        worker_penalty = -penalty_scale * worker_weight * (worker_excess / worker_span)
 
         # Scaling term: penalize frequent/large adjustments
-        scaling_penalty = -scaling_weight * abs(delta)
+        effective_delta = max(0.0, abs(delta) - scaling_tolerance)
+        scaling_penalty = -penalty_scale * scaling_weight * effective_delta
 
         # Idle term: discourage keeping many workers when the queue is empty
-        idle_penalty = -idle_weight if worker_q <= idle_queue_threshold and workers > self.min_workers else 0.0
+        idle_penalty = 0.0
+        if worker_q <= idle_queue_threshold and workers > self.min_workers:
+            idle_penalty = -penalty_scale * idle_weight * (worker_excess / worker_span)
 
         # Success bonus to counteract always-negative rewards when QoS is healthy and backlog low
         success_bonus = 0.0
         if qos_rate >= target_qos and worker_q <= queue_target * 0.5:
-            success_bonus = qos_weight * 0.1
+            qos_surplus = max(0.0, qos_rate - target_qos)
+            success_bonus = qos_weight * (success_bonus_bias + success_bonus_scale * qos_surplus)
+
+        backlog_relief_bonus = 0.0
+        queue_relief_bonus = 0.0
+        scale_up_credit_bonus = 0.0
+        if delta > 0:
+            positive_delta = float(delta)
+            backlog_relief_bonus = (
+                backlog_relief_weight
+                * backlog_amplifier
+                * max(0.0, queue_ratio - 1.0)
+                * positive_delta
+            )
+            queue_relief_bonus = (
+                queue_relief_weight
+                * max(0.0, queue_ratio - 1.0)
+                * positive_delta
+            )
+            if scale_up_credit_steps > 0 and scale_up_credit_scale > 0.0:
+                self._scale_up_credit = scale_up_credit_steps
+                self._scale_up_credit_strength = scale_up_credit_scale * positive_delta
+        elif getattr(self, "_scale_up_credit", 0) > 0:
+            self._scale_up_credit -= 1
+            scale_up_credit_bonus = self._scale_up_credit_strength
+            if self._scale_up_credit == 0:
+                self._scale_up_credit_strength = 0.0
+
+        qos_recovery_bonus = 0.0
+        qos_improvement = qos_rate - self._last_qos_rate if hasattr(self, "_last_qos_rate") else 0.0
+        if backlog_amplifier > 0 and qos_improvement > 0:
+            qos_recovery_bonus = qos_recovery_weight * qos_improvement
 
         total_reward = (
             qos_reward +
@@ -838,8 +966,15 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             scaling_penalty +
             idle_penalty +
             backlog_penalty +
-            success_bonus
+            success_bonus +
+            backlog_relief_bonus +
+            qos_recovery_bonus +
+            queue_relief_bonus +
+            scale_up_credit_bonus
         )
+
+        self._last_qos_rate = qos_rate
+        self._last_worker_queue = worker_q
 
         return total_reward
 
@@ -954,7 +1089,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             "task_seed": self._current_task_seed,
         }
 
-    def _wait_for_task_completion(self, timeout=300, check_interval=5):
+    def _wait_for_task_completion(self, timeout=8, check_interval=5):
         """
         Wait for all tasks to complete processing
 
@@ -970,6 +1105,9 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         print(f"[INFO] Waiting for queues to drain...")
 
         while time.time() - start_time < timeout:
+            # Keep collecting metrics so completed tasks end up in task_history
+            self._collect_metrics()
+
             # Check all processing queues
             input_len = self.redis_client.llen(input_queue)
             worker_len = self.redis_client.llen(worker_queue)
@@ -978,6 +1116,8 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             total_pending = input_len + worker_len + result_len
 
             if total_pending == 0:
+                # Final sweep to capture any remaining completed tasks
+                self._collect_metrics()
                 elapsed = time.time() - start_time
                 print(f"[INFO] ✓ All tasks completed after {elapsed:.1f}s")
                 return
@@ -987,6 +1127,8 @@ class OpenFaaSAutoscalingEnv(gym.Env):
 
         # Timeout reached
         elapsed = time.time() - start_time
+        # One last collection attempt before reporting timeout
+        self._collect_metrics()
         input_len = self.redis_client.llen(input_queue)
         worker_len = self.redis_client.llen(worker_queue)
         result_len = self.redis_client.llen(result_queue)

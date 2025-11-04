@@ -126,13 +126,17 @@ python test_reactive_baselines.py --agent both --steps 50 --step-duration 10 --h
 
 ```bash
 cd autoscaling_env/rl
-python train_sarsa.py --episodes 50 --max-steps 30 --step-duration 20 --initial-workers 12
+python train_sarsa.py --episodes 100 --max-steps 30 --step-duration 10 --initial-workers 12 --eval-episodes 5 --phase-shuffle --phase-shuffle-seed 42
 ```
+
+Each run automatically evaluates the latest checkpoint every `--checkpoint-every`
+episodes (and at the end of training), logging mean ± std reward/QoS metrics to
+`evaluation_metrics.json` alongside the usual `training_metrics.json`.
 
 ### **4. Evaluate Trained Model**
 
 ```bash
-python test_sarsa.py --model models/sarsa/sarsa_final.pkl --initial-workers 12 --compare-baselines
+python test_sarsa.py --model models/sarsa/sarsa_final.pkl --initial-workers 12
 ```
 
 ---
@@ -144,10 +148,13 @@ cd autoscaling_env/rl
 python compare_policies.py \
   --model rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
   --initial-workers 12 \
-  --max-steps 40
+  --max-steps 40 \
+  --agents agent reactiveaverage reactivemaximum
 ```
 
-Generates a shared-step comparison plot and detailed log under `autoscaling_env/runs/comparison/compare_<timestamp>/`.
+Generates a shared-step comparison plot, aggregated statistics, and a log under
+`autoscaling_env/runs/comparison/compare_<timestamp>/`. Re-run the plot without
+new simulations using `--plot-only --input-dir <existing_run> [--agents ...]`.
 
 ---
 

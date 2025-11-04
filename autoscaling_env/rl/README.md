@@ -38,12 +38,14 @@ produced by `utilities/configuration.yml`.
 ```bash
 python -m autoscaling_env.rl.train_sarsa \
   --episodes 100 \
-  --max-steps 50 \
+  --max-steps 30 \
   --step-duration 8 \
   --observation-window 8 \
   --initial-workers 12 \
-  --bins 10 10 10 10 16 10 10 10 10 \
-  --initialize-workflow
+  --bins 4 30 4 40 16 18 18 15 20 \
+  --eval-episodes 3 \
+  --phase-shuffle \
+  --phase-shuffle-seed 42
 ```
 
 Key arguments:
@@ -58,11 +60,15 @@ Key arguments:
   QoS). Higher values increase state resolution but enlarge the Q-table.
 - `--alpha`, `--gamma`, `--epsilon`, `--epsilon-min`, `--epsilon-decay`: SARSA
   hyperparameters.
-- `--checkpoint-every`: save intermediate models every _N_ episodes.
+- `--checkpoint-every`: save intermediate models every _N_ episodes; when
+  `--eval-episodes > 0`, each checkpoint runs greedy evaluation rollouts.
+- `--eval-episodes`: number of evaluation episodes per checkpoint (and after
+  training). Aggregated metrics (reward, final QoS across all tasks, scaling
+  actions, max workers) are written to `evaluation_metrics.json`.
 - `--output-dir`: base directory for experiment artefacts (default `runs/`). Each run
   gets a timestamped subdirectory containing logs, plots, metrics, and models.
-- `--initialize-workflow`: ensures the OpenFaaS workflow is deployed before the
-  first episode. Omit if the cluster is already primed.
+- `--phase-shuffle`: randomizes phase order each training episode (for training only).
+- `--phase-shuffle-seed`: seed for the random phase shuffling.
 
 ### Produced Artefacts
 
@@ -73,8 +79,9 @@ Each run directory includes:
   logs/training.log          # Structured log output
   models/sarsa_final.pkl     # Final SARSA agent (pickle)
   models/sarsa_epXXXX.pkl    # Optional checkpoints
-  training_metrics.json      # Episode-level metrics
-  plots/training_curves.png  # Reward/QoS/epsilon curves (auto-generated)
+  training_metrics.json      # Episode-level training metrics
+  evaluation_metrics.json    # Checkpoint evaluation summaries (if enabled)
+  plots/training_curves.png  # Training curves (with evaluation overlay when present)
 ```
 
 Interrupting training with `Ctrl+C` triggers a graceful shutdown that persists
@@ -86,11 +93,10 @@ Interrupting training with `Ctrl+C` triggers a graceful shutdown that persists
 python -m autoscaling_env.rl.test_sarsa \
   --model autoscaling_env/rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
   --episodes 10 \
-  --max-steps 50 \
+  --max-steps 30 \
   --step-duration 8 \
   --observation-window 8 \
   --initial-workers 12 \
-  --initialize-workflow
 ```
 
 The evaluation script executes a greedy policy (always selecting the
@@ -102,11 +108,22 @@ via `--output` (default `runs/eval_results.json`).
 ```bash
 python -m autoscaling_env.compare_policies \
   --model autoscaling_env/rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
-  --max-steps 40 \
-  --initial-workers 12
+  --max-steps 30 \
+  --initial-workers 12 \
+  --agents agent reactiveaverage reactivemaximum
 ```
 
-Creates a timestamped directory under `autoscaling_env/runs/comparison/` with combined per-step logs and a shared plot contrasting SARSA, ReactiveAverage, and ReactiveMaximum.
+Creates a timestamped directory under `autoscaling_env/runs/comparison/` with
+per-step logs, aggregated mean/std summaries, and a shared plot for the selected
+policies. Once `aggregated_results.json` exists for a run you can reproduce
+plots or focus on a subset of policies without rerunning simulations:
+
+```bash
+python -m autoscaling_env.compare_policies \
+  --plot-only \
+  --input-dir autoscaling_env/runs/comparison/compare_<timestamp> \
+  --agents reactiveaverage
+```
 
 ## Re-plotting Training Metrics
 
@@ -119,9 +136,10 @@ python -m autoscaling_env.rl.plot_training \
   --output autoscaling_env/rl/runs/sarsa_run_<timestamp>/plots/training_curves.png
 ```
 
-The script rebuilds the combined Reward/QoS/Epsilon plot from the stored JSON.
-If `--output` is omitted, the plot is saved alongside the metrics file under a
-`plots/` subdirectory.
+The plotter accepts either `training_metrics.json` or `logs/training.log` and
+overlays checkpoint evaluation means ± 1σ whenever `evaluation_metrics.json` is
+present (or supplied via `--evaluation`). If `--output` is omitted, the figure
+is saved next to the metrics file inside a `plots/` subdirectory.
 
 ## Configuration Tips
 

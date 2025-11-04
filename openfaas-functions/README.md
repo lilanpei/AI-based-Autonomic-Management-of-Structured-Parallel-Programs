@@ -26,14 +26,13 @@ openfaas-functions/
 ### **Workflow Pattern**
 
 ```
-  input_queue          worker_queue         result_queue      output_queue
-      │                     │                     │                 │
-      ▼                     ▼                     ▼                 ▼
-┌──────────┐         ┌──────────┐          ┌──────────┐      ┌─────────┐
+  input_queue         worker_queue        result_queue      output_queue
+      │                    │                    │                 │
+      ▼                    ▼                    ▼                 ▼
+┌──────────┐         ┌──────────┐          ┌──────────┐      ┌---------┐
 │ EMITTER  │────────▶│ WORKER-1 │─────────▶│COLLECTOR │─────▶│ RESULTS │
-│  (1x)    │         │  (Nx)    │          │  (1x)    │      │         │
-└──────────┘         ├──────────┤          └──────────┘      └─────────┘
-                     │ WORKER-2 │
+│  (1x)    │         ├──────────┤          │  (1x)    │      │         │
+└──────────┘         │ WORKER-2 │          └──────────┘      └---------┘
                      ├──────────┤
                      │ WORKER-N │
                      └──────────┘

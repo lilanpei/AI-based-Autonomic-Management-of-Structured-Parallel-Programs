@@ -1,7 +1,5 @@
 """Tabular SARSA agent for the OpenFaaS autoscaling environment."""
 
-from __future__ import annotations
-
 import math
 import pickle
 from collections import defaultdict
@@ -93,8 +91,16 @@ class SARSAAgent:
         """Return an action index using epsilon-greedy policy."""
         if np.random.random() < self._epsilon:
             return np.random.randint(self.action_size)
+        return self.greedy_action(state)
+
+    def greedy_action(self, state: Tuple[int, ...]) -> int:
+        """Return the greedy action with randomized tie-breaking."""
         q_values = self._q_table[state]
-        return int(np.argmax(q_values))
+        max_value = q_values.max()
+        best_actions = np.flatnonzero(q_values == max_value)
+        if best_actions.size == 0:
+            return 0
+        return int(np.random.choice(best_actions))
 
     def update(
         self,

@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Compare reduced vs full quadratic timing models on existing calibration data."""
 
-from __future__ import annotations
-
 import argparse
 import json
 from pathlib import Path
@@ -207,15 +205,15 @@ def plot_comparison(
         bbox=dict(boxstyle="round,pad=0.4", facecolor="#ffffff", alpha=0.92, edgecolor="#cccccc"),
     )
 
-    coeff_lines = [
-        "Coefficients:",
-        "  Reduced → a = {:.3e}, b = {:.3e}".format(reduced["params"][0], reduced["params"][1]),
-        "  Full     → a = {:.3e}, b = {:.3e}, c = {:.3e}".format(
-            full["params"][0], full["params"][1], full["params"][2]
-        ),
+    reduced_a, reduced_b = reduced["params"]
+    full_a, full_b, full_c = full["params"]
+    formula_lines = [
+        "Model formulas:",
+        f"  Reduced: t(x) = {reduced_a:.3e}·x² + {reduced_b:.3e}",
+        f"  Full:     t(x) = {full_a:.3e}·x² + {full_b:.3e}·x + {full_c:.3e}",
     ]
     ax_curve.annotate(
-        "\n".join(coeff_lines),
+        "\n".join(formula_lines),
         xy=(0.05, 0.55),
         xycoords="axes fraction",
         fontsize=10,

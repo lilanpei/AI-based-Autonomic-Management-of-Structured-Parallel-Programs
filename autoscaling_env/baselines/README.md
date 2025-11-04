@@ -90,20 +90,13 @@ Policies map the worker delta to the 3-action space used by the environment:
 
 ```bash
 cd autoscaling_env
-python test_reactive_baselines.py --agent average --steps 15
+python test_reactive_baselines.py --agent average --steps 30
 ```
 
 ### **Test Both Policies**
 
 ```bash
-python test_reactive_baselines.py --agent both --steps 50 --step-duration 10 --horizon 10
-```
-
-### **Compare with RL Agent**
-
-```bash
-cd rl
-python train_ppo.py --mode compare --model models/ppo_final.pt --episodes 3
+python test_reactive_baselines.py --agent both --steps 30 --step-duration 8 --horizon 8
 ```
 
 ---

@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Evaluate a trained SARSA agent with detailed logging and plots."""
 
-from __future__ import annotations
-
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -157,7 +155,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True, help="Path to SARSA model (.pkl)")
     parser.add_argument("--episodes", type=int, default=10, help="Evaluation episodes")
-    parser.add_argument("--max-steps", type=int, default=31, help="Max steps per episode")
+    parser.add_argument("--max-steps", type=int, default=30, help="Max steps per episode")
     parser.add_argument("--step-duration", type=int, default=8, help="Seconds per action step")
     parser.add_argument("--observation-window", type=int, default=8, help="Observation window size")
     parser.add_argument("--initial-workers", type=int, default=12, help="Initial workers")
@@ -187,7 +185,7 @@ def evaluate_episode(
     print(f"✓ Initial state: {np.array2string(observation, precision=2)}")
 
     state = agent.discretize(observation)
-    action = int(np.argmax(agent.q_values(state)))
+    action = agent.greedy_action(state)
 
     rewards: List[float] = []
     qos_rates: List[float] = []
@@ -204,7 +202,7 @@ def evaluate_episode(
     for step in range(1, max_steps + 1):
         next_obs, reward, done, info = env.step(action)
         next_state = agent.discretize(next_obs)
-        next_action = int(np.argmax(agent.q_values(next_state)))
+        next_action = agent.greedy_action(next_state)
 
         rewards.append(float(reward))
         qos = float(info.get("qos_rate", next_obs[8]))
@@ -282,13 +280,24 @@ def evaluate_episode(
     scaling_actions = int(sum(1 for a in actions if a != 1))
     noop_actions = int(sum(1 for a in actions if a == 1))
 
+    task_history = getattr(env, "task_history", [])
+    if task_history:
+        qos_successes = sum(1 for _, _, success in task_history if success)
+        final_qos_total = qos_successes / len(task_history)
+    else:
+        final_qos_total = 1.0
+
+    max_workers = max(worker_counts) if worker_counts else float(getattr(env, "initial_workers", 0))
+
     print("\n[3/3] Summary Statistics")
     print("-" * 70)
     print(f"Total Steps:        {steps_taken}")
     print(f"Total Reward:       {total_reward:.2f}")
     print(f"Mean Reward:        {mean_reward:.2f} ± {std_reward:.2f}")
     print(f"Mean QoS Rate:      {mean_qos:.2%}")
+    print(f"Final QoS:  {final_qos_total:.2%}")
     print(f"Mean Workers:       {mean_workers:.1f}")
+    print(f"Max Workers:        {max_workers:.1f}")
     print(f"Scaling Actions:    {scaling_actions}")
     print(f"No-op Actions:      {noop_actions}")
     print("=" * 70 + "\n")
@@ -307,7 +316,9 @@ def evaluate_episode(
             "total_reward": total_reward,
             "mean_reward": mean_reward,
             "mean_qos": mean_qos,
+            "final_qos_total": final_qos_total,
             "mean_workers": mean_workers,
+            "max_workers": max_workers,
             "scaling_actions": scaling_actions,
             "noop_actions": noop_actions,
         },

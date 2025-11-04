@@ -441,7 +441,7 @@ def main():
     parser = argparse.ArgumentParser(description='Test reactive baseline policies')
     parser.add_argument('--agent', choices=['average', 'maximum', 'both'], default='both',
                         help='Which agent to test')
-    parser.add_argument('--steps', type=int, default=50,
+    parser.add_argument('--steps', type=int, default=30,
                         help='Maximum number of steps (episode ends early if all tasks complete)')
     parser.add_argument('--initial-workers', type=int, default=12,
                         help='Initial number of workers')

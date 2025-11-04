@@ -49,15 +49,38 @@ A Gym-compatible environment for autoscaling OpenFaaS workers.
 
 **Reward Function** (configurable):
 ```
-reward = qos_delta_term + queue_penalty + worker_penalty + scaling_penalty + idle_penalty
+reward =
+  w_qos * (qos_rate - target_qos)
++ penalty_scale * (
+- w_queue * max(0, worker_q / queue_target - 1)
+- w_backlog * max(0, target_qos - qos_rate) * (1 + worker_q / queue_target)
+- w_workers * (max(0, workers - min_workers) / (max_workers - min_workers))
+- w_scaling * max(0, |delta| - scaling_tolerance)
+- [w_idle * (max(0, workers - min_workers) / (max_workers - min_workers)) if worker_q ≤ idle_queue_threshold else 0]
++ success_bonus
+)
++ [backlog_relief_weight * max(0, target_qos - qos_rate) * max(0, worker_q / queue_target - 1) * max(delta, 0)]
++ [qos_recovery_weight * max(0, qos_rate - qos_rate_prev) if qos_rate < target_qos else 0]
++ [queue_relief_weight * max(0, worker_q / queue_target - 1) * max(delta, 0)]
++ [scale_up_credit_scale * max(0, delta_prev) while scale_up_credit_steps remain]
 ```
 
-Components (weights + targets in `utilities/configuration.yml`):
-- `qos_delta_term`: QoS rate relative to `reward.target_qos`
-- `queue_penalty`: Queue length normalised by `reward.queue_target`
-- `worker_penalty`: Worker usage above `min_workers`, scaled to available range
-- `scaling_penalty`: Proportional to `abs(delta)` to discourage thrashing
-- `idle_penalty`: Applies when the queue is (nearly) empty but extra workers remain
+Where:
+- `success_bonus = w_qos * (success_bonus_bias + success_bonus_scale * max(0, qos_rate - target_qos))` when QoS meets/exceeds the target and backlog ≤ 50% of `queue_target`, providing a stronger positive signal as QoS improves.
+- `penalty_scale`, `queue_relief_weight`, `scale_up_credit_steps`, `scale_up_credit_scale`, `w_*` weights, `target_qos`, `queue_target`, `idle_queue_threshold`, `scaling_tolerance`, `success_bonus_bias`, `success_bonus_scale`, `backlog_relief_weight`, and `qos_recovery_weight` are set in `utilities/configuration.yml` under the `reward` block.
+- `w_qos * (qos_rate - target_qos)`: Positive incentive when QoS meets the goal, negative when it falls short.
+- `penalty_scale` keeps the large negative components bounded so they do not swamp exploratory steps.
+- `- w_queue * max(0, worker_q / queue_target - 1)` penalizes worker queue backlog beyond the desired target length.
+- `- w_backlog * max(0, target_qos - qos_rate) * (1 + worker_q / queue_target)` amplifies backlog penalties when QoS drops below target.
+- `- w_workers * (max(0, workers - min_workers) / (max_workers - min_workers))` discourages holding excess workers beyond the configured minimum.
+- `- w_scaling * max(0, |delta| - scaling_tolerance)` ignores small adjustments within the tolerance window before penalising larger swings.
+- `- w_idle * (max(0, workers - min_workers) / (max_workers - min_workers))` applies when the worker queue is at/below `idle_queue_threshold`, scaling the penalty by excess capacity.
+- `backlog_relief_weight * max(0, target_qos - qos_rate) * max(0, worker_q / queue_target - 1) * max(delta, 0)` rewards scale-up actions only when backlog exceeds the target **and** QoS is below target, keeping the signal tied to urgent recovery steps.
+- `qos_recovery_weight * max(0, qos_rate - qos_rate_prev)` adds a bonus when QoS improves between steps while still below target, reinforcing recovery efforts during backlog.
+- `queue_relief_weight * max(0, worker_q / queue_target - 1) * max(delta, 0)` gives an extra boost to scale-up moves taken while the queue is still over target, further reinforcing corrective scaling.
+- `scale_up_credit_scale * max(0, delta_prev)` is applied for `scale_up_credit_steps` timesteps after a scale-up, keeping a positive shaping signal active while the added workers drain the backlog.
+- Terminal shaping now applies `penalty_scale × unfinished_penalty × min(pending_tasks, queue_target)` at the horizon, capping the negative spike, or adds `completion_bonus` when all tasks finish early.
+- `delta` is the **applied** scaling change after clipping to `[min_workers, max_workers]`. The environment waits the remaining step duration, refreshes QoS/queue metrics, and then evaluates the reward, so SARSA receives `(s, a, r, s')` tuples where `r` reflects the action's observed effect.
 
 ---
 
@@ -67,7 +90,7 @@ Components (weights + targets in `utilities/configuration.yml`):
 
 ```bash
 cd autoscaling_env
-python test_reactive_baselines.py --agent both --steps 50 --step-duration 10 --horizon 10
+python test_reactive_baselines.py --agent both --steps 30 --step-duration 8 --horizon 8
 ```
 
 **Output**: Comparison plots and statistics for ReactiveAverage and ReactiveMaximum
@@ -76,15 +99,17 @@ python test_reactive_baselines.py --agent both --steps 50 --step-duration 10 --h
 
 ```bash
 cd rl
-python train_sarsa.py --episodes 50 --max-steps 30 --step-duration 20 --initial-workers 12
+python train_sarsa.py --episodes 100 --max-steps 30 --step-duration 8 --initial-workers 12 --eval-episodes 3 --phase-shuffle --phase-shuffle-seed 42
 ```
 
-**Output**: Model saved to `models/sarsa/sarsa_final.pkl`
+**Output**: Model saved to `models/sarsa/sarsa_final.pkl` plus
+`evaluation_metrics.json` that captures checkpoint mean ± std reward/QoS during
+training.
 
 ### **3. Evaluate Trained Model**
 
 ```bash
-python test_sarsa.py --model models/sarsa/sarsa_final.pkl --initial-workers 12 --compare-baselines
+python test_sarsa.py --model models/sarsa/sarsa_final.pkl --initial-workers 12
 ```
 
 **Output**: Timestamped run directory with logs, plots, and metrics under `runs/`
@@ -95,10 +120,14 @@ python test_sarsa.py --model models/sarsa/sarsa_final.pkl --initial-workers 12 -
 python compare_policies.py \
   --model rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
   --initial-workers 12 \
-  --max-steps 40
+  --max-steps 30 \
+  --agents agent reactiveaverage reactivemaximum
 ```
 
-**Output**: Per-step logs for SARSA, ReactiveAverage, and ReactiveMaximum plus a shared comparison plot under `autoscaling_env/runs/comparison/compare_<timestamp>/`
+**Output**: Per-step logs for selected policies, aggregated summaries, and a
+shared comparison plot under `autoscaling_env/runs/comparison/compare_<timestamp>/`.
+Rebuild plots from an existing run with `--plot-only --input-dir <run_dir>
+[--agents ...]` to focus on specific policies.
 
 ---
 
@@ -111,9 +140,12 @@ Each episode:
 - Generates tasks based on phase configurations
 - **Terminates when**: All tasks completed OR max_steps reached
 - Automatically calculates `phase_duration` to cover episode
-- Waits for all tasks to complete before ending
+- Waits for all tasks to complete before ending so QoS reflects all finished tasks
 
-**Key improvement**: Episodes end naturally when work is done, not at arbitrary step limits!
+**Key improvements**:
+- Episodes end naturally when work is done instead of arbitrary step limits
+- Terminal reward shaping penalises unfinished tasks at the max-step boundary
+  and rewards early completion (see `utilities/configuration.yml`)
 
 ### **2. Task Generation**
 
