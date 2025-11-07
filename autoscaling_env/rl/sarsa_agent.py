@@ -5,7 +5,7 @@ import pickle
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import DefaultDict, Iterable, Tuple
+from typing import DefaultDict, Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -17,6 +17,7 @@ class DiscretizationConfig:
     bins_per_dimension: Tuple[int, ...]
     observation_low: Iterable[float]
     observation_high: Iterable[float]
+    edges_per_dimension: Optional[Sequence[Optional[Sequence[float]]]] = None
 
     def __post_init__(self) -> None:
         low = np.array(self.observation_low, dtype=float)
@@ -29,6 +30,28 @@ class DiscretizationConfig:
 
         self.low = low
         self.high = high
+
+        if self.edges_per_dimension is not None:
+            if len(self.edges_per_dimension) != low.size:
+                raise ValueError("edges_per_dimension must match observation dimensionality")
+            normalized_edges = []
+            normalized_bins = []
+            for idx, (n_bins, edges) in enumerate(zip(self.bins_per_dimension, self.edges_per_dimension)):
+                if edges is None:
+                    normalized_edges.append(None)
+                    normalized_bins.append(n_bins)
+                    continue
+                arr = np.asarray(edges, dtype=np.float32)
+                if arr.ndim != 1:
+                    raise ValueError(f"edges for dimension {idx} must be 1-D")
+                if arr.size and not np.all(arr[1:] > arr[:-1]):
+                    raise ValueError(f"edges for dimension {idx} must be strictly increasing")
+                normalized_edges.append(arr)
+                normalized_bins.append(arr.size + 1)
+            self.edges_per_dimension = tuple(normalized_edges)
+            self.bins_per_dimension = tuple(normalized_bins)
+        else:
+            self.edges_per_dimension = tuple([None] * low.size)
 
 
 @dataclass
@@ -61,6 +84,10 @@ class SARSAAgent:
         for i, n_bins in enumerate(self.discretization.bins_per_dimension):
             low = self.discretization.low[i]
             high = self.discretization.high[i]
+            override_edges = self.discretization.edges_per_dimension[i]
+            if override_edges is not None:
+                self._bins.append(np.array(override_edges, dtype=np.float32))
+                continue
             if math.isinf(low) or math.isinf(high):
                 # Fallback to a reasonable numeric range
                 low = -1.0
@@ -100,7 +127,8 @@ class SARSAAgent:
         best_actions = np.flatnonzero(q_values == max_value)
         if best_actions.size == 0:
             return 0
-        return int(np.random.choice(best_actions))
+        # Deterministic tie-breaker: prefer the largest action index
+        return int(best_actions[-1])
 
     def update(
         self,

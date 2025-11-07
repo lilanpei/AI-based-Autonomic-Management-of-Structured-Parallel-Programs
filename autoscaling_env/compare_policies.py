@@ -12,6 +12,10 @@ import random
 import os
 import sys
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+sns.set_style("whitegrid")
 
 # Ensure project root on path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -401,97 +405,80 @@ def plot_step_boxplots(
     records_by_agent: Dict[str, List[Dict[str, List[float]]]],
     output_path: Path,
 ) -> None:
-    metrics = {
-        "rewards": ("Reward per Step", "Reward", lambda x: x),
-        "qos_rates": ("QoS Success Rate", "QoS (%)", lambda x: x * 100.0),
-        "worker_counts": ("Worker Count", "Workers", lambda x: x),
-        "queue_lengths": ("Worker Queue Length", "Tasks in queue", lambda x: x),
-    }
-    agents = list(records_by_agent.keys())
-    colors = plt.get_cmap("tab10")
-    color_cycle = {agent: colors(idx % 10) for idx, agent in enumerate(agents)}
+    metrics = [
+        ("avg_times", "Average Processing Time", "Avg Processing Time [s]", lambda x: x),
+        ("qos_rates", "QoS Success Rate", "QoS [%]", lambda x: x * 100.0),
+        ("worker_counts", "Worker Count", "Workers", lambda x: x),
+        ("queue_lengths", "Worker Queue Length", "Tasks in Queue", lambda x: x),
+    ]
 
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10), constrained_layout=True)
-    fig.suptitle("Policy Comparison Across Episodes", fontsize=16, fontweight="bold")
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8), constrained_layout=True)
+    color_cycle = plt.get_cmap("tab10")
 
-    metric_items = list(metrics.items())
+    any_plotted = False
 
-    for ax, (metric_key, (title, y_label, transform)) in zip(axes.flat, metric_items):
-        step_maps = {
-            agent: collect_step_series(records_by_agent[agent], metric_key, transform)
-            for agent in agents
-        }
-        max_steps = 0
-        for step_map in step_maps.values():
-            if step_map:
-                max_steps = max(max_steps, max(step_map.keys()) + 1)
-
-        if max_steps == 0:
-            ax.set_title(title)
-            ax.set_xlabel("Step")
-            ax.set_ylabel(y_label)
-            continue
-
-        handles = []
-        base_positions = np.arange(max_steps)
-        width = max(0.15, 0.6 / max(1, len(agents)))
-
-        for idx, agent in enumerate(agents):
-            step_map = step_maps[agent]
-            if not step_map:
+    for (metric_key, title, ylabel, transform), ax in zip(metrics, axes.flat):
+        plotted_metric = False
+        for idx, (agent_name, records) in enumerate(records_by_agent.items()):
+            step_series = collect_step_series(records, metric_key, transform)
+            if not step_series:
                 continue
 
-            positions = base_positions + (idx - (len(agents) - 1) / 2) * width
-            data = [np.array(step_map.get(step_idx, [])) for step_idx in range(max_steps)]
+            max_len = max(step_series.keys()) + 1
+            means = np.full(max_len, np.nan)
+            stds = np.zeros(max_len)
+            mins = np.full(max_len, np.nan)
+            maxs = np.full(max_len, np.nan)
 
-            filtered = [(pos, arr) for pos, arr in zip(positions, data) if arr.size]
-            if not filtered:
+            for step_idx in range(max_len):
+                values = np.array(step_series.get(step_idx, []), dtype=float)
+                if values.size == 0:
+                    continue
+                else:
+                    means[step_idx] = values.mean()
+                    stds[step_idx] = values.std(ddof=0)
+                    mins[step_idx] = values.min()
+                    maxs[step_idx] = values.max()
+
+            steps = np.arange(1, max_len + 1)
+            color = color_cycle(idx % 10)
+
+            lower = np.maximum(means - stds, mins)
+            upper = np.minimum(means + stds, maxs)
+
+            valid_mask = ~np.isnan(means)
+            if not np.any(valid_mask):
                 continue
 
-            positions, data = zip(*filtered)
-            bp = ax.boxplot(
-                data,
-                positions=positions,
-                widths=width * 0.8,
-                patch_artist=True,
-                manage_ticks=False,
+            ax.plot(steps[valid_mask], means[valid_mask], label=agent_name, color=color, linewidth=2)
+            ax.fill_between(
+                steps[valid_mask],
+                lower[valid_mask],
+                upper[valid_mask],
+                color=color,
+                alpha=0.2,
             )
-
-            for box in bp["boxes"]:
-                box.set(facecolor=color_cycle[agent], alpha=0.45)
-            for median in bp["medians"]:
-                median.set(color=color_cycle[agent], linewidth=1.2)
-            for whisker in bp["whiskers"]:
-                whisker.set(color=color_cycle[agent], linewidth=0.8)
-            for cap in bp["caps"]:
-                cap.set(color=color_cycle[agent], linewidth=0.8)
-
-            means = [np.mean(arr) for arr in data]
-            stds = [np.std(arr) for arr in data]
-            ax.errorbar(
-                positions,
-                means,
-                yerr=stds,
-                fmt="o",
-                color=color_cycle[agent],
-                capsize=2,
-                markersize=3,
-                linewidth=1,
-            )
-
-            handles.append(mpatches.Patch(color=color_cycle[agent], label=agent))
+            plotted_metric = True
+            any_plotted = True
 
         ax.set_title(title)
         ax.set_xlabel("Step")
-        ax.set_ylabel(y_label)
-        ax.set_xticks(base_positions)
-        ax.set_xticklabels([str(step + 1) for step in base_positions], rotation=45)
+        ax.set_ylabel(ylabel)
         ax.grid(True, alpha=0.3)
-        if handles:
-            unique_handles = {handle.get_label(): handle for handle in handles}
-            ax.legend(unique_handles.values(), unique_handles.keys(), loc="best", frameon=False)
+        if plotted_metric:
+            ax.legend(loc="best", frameon=False)
+        else:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=12)
+            ax.set_xticks([])
+            ax.set_yticks([])
 
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    if not any_plotted:
+        print("[WARN] No step metric data found for plotting")
+        plt.close(fig)
+        return
+
+    fig.suptitle("Policy Comparison: Mean ± Std over Steps", fontsize=16)
+    fig.savefig(output_path, dpi=200)
     plt.close(fig)
 
 
@@ -525,7 +512,7 @@ def main() -> None:
     parser.add_argument(
         "--agents",
         nargs="+",
-        default=None,
+        default=["SARSA", "ReactiveAverage", "ReactiveMaximum"],
         help="Subset of agents to include in plots/summaries (e.g. 'agent reactiveaverage')",
     )
     args = parser.parse_args()
@@ -672,29 +659,8 @@ def main() -> None:
                 finally:
                     env.close()
 
-            metric_labels = {
-                "total_reward": "Total Reward",
-                "final_qos_total": "Final QoS (tasks)",
-                "scaling_actions": "Scaling Actions",
-                "max_workers": "Max Workers",
-            }
-
-            for agent_name, data in aggregated.items():
-                summary = data["summary"]
-                print(f"[SUMMARY] {agent_name}")
-                for key, label in metric_labels.items():
-                    metric = summary.get(key, {"mean": 0.0, "std": 0.0})
-                    mean_value = metric.get("mean", 0.0)
-                    std_value = metric.get("std", 0.0)
-
-                    if key == "final_qos_total":
-                        mean_str = f"{mean_value:.2%}"
-                        std_str = f"{std_value:.2%}"
-                    else:
-                        mean_str = f"{mean_value:.2f}"
-                        std_str = f"{std_value:.2f}"
-
-                    print(f"  - {label}: {mean_str} ± {std_str}")
+            all_agents = list(aggregated.keys())
+            print_agent_summaries(aggregated, all_agents)
 
             save_aggregated_results(output_dir / AGGREGATED_FILENAME, aggregated)
 
@@ -704,7 +670,8 @@ def main() -> None:
 
             records_by_agent = {name: aggregated[name]["records"] for name in selected_agents}
             plot_step_boxplots(records_by_agent, plot_path)
-            print_agent_summaries(aggregated, selected_agents)
+            if selected_agents != all_agents:
+                print_agent_summaries(aggregated, selected_agents)
             print(f"[INFO] Aggregated results saved to {output_dir / AGGREGATED_FILENAME}")
             print(f"[PLOT] Saved comparison to {plot_path}")
         finally:

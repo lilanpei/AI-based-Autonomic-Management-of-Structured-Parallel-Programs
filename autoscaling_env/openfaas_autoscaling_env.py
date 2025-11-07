@@ -190,11 +190,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         self.total_reward = 0
         self.total_qos_violations = 0
         self.total_scaling_actions = 0
-        self._last_qos_rate = 1.0
-        self._last_worker_queue = 0.0
         self._episode_final_qos = None
-        self._scale_up_credit = 0
-        self._scale_up_credit_strength = 0.0
 
         # Reset task generation timing markers
         self.task_generation_start_time = 0.0
@@ -336,8 +332,6 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             applied_delta = self._execute_scaling_action(requested_delta, workers_before)
             if applied_delta != 0:
                 self.total_scaling_actions += 1
-            else:
-                print("[INFO] Scaling request resulted in no replica change")
         else:
             print("[INFO] No scaling action (delta=0)")
             applied_delta = 0
@@ -372,27 +366,29 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         done = self._check_episode_done(observation)
 
         reward_cfg = self.config.get("reward", {})
-        unfinished_penalty_scale = float(reward_cfg.get("unfinished_penalty"))
+        unfinished_penalty_scale = float(reward_cfg.get("unfinished_penalty_scale"))
         completion_bonus = float(reward_cfg.get("completion_bonus"))
         queue_target = float(reward_cfg.get("queue_target"))
-        penalty_scale = float(reward_cfg.get("penalty_scale"))
+
+        expected_tasks = self._get_expected_task_count()
 
         # If episode is done, optionally adjust reward and wait for tasks to complete
+        unfinished_tasks = 0
         if done:
-            pending_tasks = int(observation[0] + observation[1] + observation[2])
+            pending_tasks = max(0, int(expected_tasks - observation[3]))
+            unfinished_tasks = pending_tasks
             if self.current_step >= self.max_steps:
                 if unfinished_penalty_scale > 0 and pending_tasks > 0:
                     pending_capped = min(pending_tasks, queue_target)
-                    penalty = penalty_scale * unfinished_penalty_scale * pending_capped
+                    penalty = unfinished_penalty_scale * pending_capped
                     reward -= penalty
                     print(
                         f"[REWARD] Applied unfinished-task penalty: -{penalty:.2f} "
                         f"({pending_capped} capped tasks × {unfinished_penalty_scale:.2f})"
                     )
-            else:
-                if completion_bonus > 0:
-                    reward += completion_bonus
-                    print(f"[REWARD] Applied early completion bonus: +{completion_bonus:.2f}")
+            elif completion_bonus > 0:
+                reward += completion_bonus
+                print(f"[REWARD] Applied early completion bonus: +{completion_bonus:.2f}")
 
             if self.current_step >= self.max_steps:
                 print(f"[INFO] Episode finished: Max steps ({self.max_steps}) reached")
@@ -429,6 +425,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             'task_generation_end_time': self.task_generation_end_time,
             'episode_final_qos': episode_final_qos,
             'processed_tasks': len(self.task_history),
+            'unfinished_tasks': unfinished_tasks,
         }
 
         print(f"[REWARD] {reward:.2f} | Total: {self.total_reward:.2f}")
@@ -859,124 +856,74 @@ class OpenFaaSAutoscalingEnv(gym.Env):
     def _calculate_reward(self, observation, delta):
         """Calculate reward for the current state/action pair.
 
-        The reward blends multiple signals so policies can balance QoS, queue
-        stability, and resource efficiency. All coefficients can be overridden
-        from configuration under the ``reward`` section:
+        The reward balances four signals using configuration keys under ``reward``:
 
-        ``reward``
-            ``target_qos``: Desired QoS threshold (default 0.95)
-            ``queue_target``: Preferred worker queue length (default 50)
-            ``idle_queue_threshold``: Queue length considered "idle" (default 1)
-            ``weights``: Dict with keys ``qos``, ``queue``, ``worker``, ``scaling``, ``idle``
-                controlling each term's magnitude.
+        - ``target_qos``: desired QoS success rate (default 0.95)
+        - ``queue_target``: worker-queue length considered healthy
+        - ``balanced_workers``: replica count treated as cost-neutral when queues are light
+        - ``idle_queue_threshold``: queue length regarded as idle for efficiency checks
+        - ``weights``: dict with keys ``qos``, ``backlog``, ``scaling``, ``efficiency``, and
+          ``scale`` (with sub-keys ``up`` and ``down``)
         """
 
         # Unpack observation vector
         input_q, worker_q, result_q, output_q, workers, avg_time, max_time, arrival_rate, qos_rate = observation
 
+        # Load explicit tuning knobs from configuration. Defaulting to zero keeps
+        # experimentation easy—unused signals simply drop out of the sum.
         reward_cfg = self.config.get("reward", {})
         weights = reward_cfg.get("weights", {})
 
+        # Primary weights for the four base signals.
         qos_weight = float(weights.get("qos"))
-        queue_weight = float(weights.get("queue"))
-        backlog_weight = float(weights.get("backlog", queue_weight))
-        worker_weight = float(weights.get("workers"))
+        backlog_weight = float(weights.get("backlog"))
         scaling_weight = float(weights.get("scaling"))
-        idle_weight = float(weights.get("idle"))
+        efficiency_weight = float(weights.get("efficiency"))
+        # Directional scale incentives are grouped in a nested dict.
+        scale_weights = weights.get("scale")
+        scale_up_weight = float(scale_weights.get("up"))
+        scale_down_weight = float(scale_weights.get("down"))
 
+        # Shared thresholds/targets for interpreting the observation.
         target_qos = float(reward_cfg.get("target_qos"))
-        queue_target = float(reward_cfg.get("queue_target"))
-        penalty_scale = float(reward_cfg.get("penalty_scale"))
-        queue_relief_weight = float(reward_cfg.get("queue_relief_weight"))
-        scale_up_credit_steps = int(reward_cfg.get("scale_up_credit_steps"))
-        scale_up_credit_scale = float(reward_cfg.get("scale_up_credit_scale"))
-        idle_queue_threshold = float(reward_cfg.get("idle_queue_threshold"))
-        scaling_tolerance = float(reward_cfg.get("scaling_tolerance"))
-        success_bonus_scale = float(reward_cfg.get("success_bonus_scale"))
-        success_bonus_bias = float(reward_cfg.get("success_bonus_bias"))
-        backlog_relief_weight = float(reward_cfg.get("backlog_relief_weight"))
-        qos_recovery_weight = float(reward_cfg.get("qos_recovery_weight"))
+        queue_target = max(1.0, float(reward_cfg.get("queue_target")))
+        balanced_workers = float(reward_cfg.get("balanced_workers", self.initial_workers))
+        idle_queue_threshold = float(reward_cfg.get("idle_queue_threshold", queue_target * 0.25))
 
-        # QoS term: positive when meeting/exceeding target, negative otherwise
-        qos_delta = qos_rate - target_qos
-        qos_reward = qos_weight * qos_delta
+        # QoS signal: encourage hitting the target rate, penalise shortfalls.
+        qos_term = qos_weight * (qos_rate - target_qos)
 
-        # Queue term: penalize backlog relative to target queue length
-        queue_ratio = worker_q / queue_target
-        queue_penalty = -penalty_scale * queue_weight * max(0.0, queue_ratio - 1.0)
+        backlog_ratio = worker_q / queue_target
+        backlog_pressure = max(0.0, backlog_ratio - 1.0)
+        # Quadratic backlog penalty so extreme queues dominate the negative signal.
+        backlog_penalty = backlog_weight * (backlog_pressure ** 2)
 
-        # Backlog amplification: when QoS is dropping, amplify penalty by backlog severity
-        backlog_amplifier = max(0.0, target_qos - qos_rate)
-        backlog_penalty = -penalty_scale * backlog_weight * backlog_amplifier * (1.0 + queue_ratio)
+        efficiency_penalty = 0.0
+        if worker_q <= idle_queue_threshold and qos_rate >= target_qos:
+            # Only penalise surplus replicas once the system is already calm.
+            worker_surplus = max(0.0, workers - balanced_workers)
+            efficiency_penalty = efficiency_weight * worker_surplus
 
-        # Worker term: penalize workers beyond the configured minimum
-        worker_excess = max(0.0, workers - self.min_workers)
-        worker_span = max(1.0, self.max_workers - self.min_workers)
-        worker_penalty = -penalty_scale * worker_weight * (worker_excess / worker_span)
+        # Any scaling movement carries a small generic cost to discourage thrashing.
+        scaling_penalty = scaling_weight * abs(delta)
 
-        # Scaling term: penalize frequent/large adjustments
-        effective_delta = max(0.0, abs(delta) - scaling_tolerance)
-        scaling_penalty = -penalty_scale * scaling_weight * effective_delta
+        overloaded = backlog_ratio > 1.0 or qos_rate < target_qos
+        scale_bonus = 0.0
+        if delta > 0 and overloaded:
+            # Reward scale-ups only when queues/QoS signal stress.
+            scale_bonus += scale_up_weight * abs(delta)
+        elif delta < 0 and not overloaded:
+            # Reward trimming replicas when the system is comfortably within targets.
+            scale_bonus += scale_down_weight * abs(delta)
 
-        # Idle term: discourage keeping many workers when the queue is empty
-        idle_penalty = 0.0
-        if worker_q <= idle_queue_threshold and workers > self.min_workers:
-            idle_penalty = -penalty_scale * idle_weight * (worker_excess / worker_span)
+        stability_bonus = 0.0
+        if qos_rate >= target_qos and backlog_ratio <= 0.5:
+            # Reinvest a fraction of the QoS weight to reinforce steady healthy states.
+            stability_bonus = qos_weight * 0.1
 
-        # Success bonus to counteract always-negative rewards when QoS is healthy and backlog low
-        success_bonus = 0.0
-        if qos_rate >= target_qos and worker_q <= queue_target * 0.5:
-            qos_surplus = max(0.0, qos_rate - target_qos)
-            success_bonus = qos_weight * (success_bonus_bias + success_bonus_scale * qos_surplus)
+        reward = qos_term - backlog_penalty - efficiency_penalty - scaling_penalty + scale_bonus + stability_bonus
 
-        backlog_relief_bonus = 0.0
-        queue_relief_bonus = 0.0
-        scale_up_credit_bonus = 0.0
-        if delta > 0:
-            positive_delta = float(delta)
-            backlog_relief_bonus = (
-                backlog_relief_weight
-                * backlog_amplifier
-                * max(0.0, queue_ratio - 1.0)
-                * positive_delta
-            )
-            queue_relief_bonus = (
-                queue_relief_weight
-                * max(0.0, queue_ratio - 1.0)
-                * positive_delta
-            )
-            if scale_up_credit_steps > 0 and scale_up_credit_scale > 0.0:
-                self._scale_up_credit = scale_up_credit_steps
-                self._scale_up_credit_strength = scale_up_credit_scale * positive_delta
-        elif getattr(self, "_scale_up_credit", 0) > 0:
-            self._scale_up_credit -= 1
-            scale_up_credit_bonus = self._scale_up_credit_strength
-            if self._scale_up_credit == 0:
-                self._scale_up_credit_strength = 0.0
-
-        qos_recovery_bonus = 0.0
-        qos_improvement = qos_rate - self._last_qos_rate if hasattr(self, "_last_qos_rate") else 0.0
-        if backlog_amplifier > 0 and qos_improvement > 0:
-            qos_recovery_bonus = qos_recovery_weight * qos_improvement
-
-        total_reward = (
-            qos_reward +
-            queue_penalty +
-            worker_penalty +
-            scaling_penalty +
-            idle_penalty +
-            backlog_penalty +
-            success_bonus +
-            backlog_relief_bonus +
-            qos_recovery_bonus +
-            queue_relief_bonus +
-            scale_up_credit_bonus
-        )
-
-        self._last_qos_rate = qos_rate
-        self._last_worker_queue = worker_q
-
-        return total_reward
+        return reward
 
     def _initialize_farm(self):
         """

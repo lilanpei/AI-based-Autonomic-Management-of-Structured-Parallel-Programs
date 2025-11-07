@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Optional, Sequence
 
 import numpy as np
 
@@ -15,6 +15,7 @@ def build_discretization_config(
     observation_low: Iterable[float],
     observation_high: Iterable[float],
     bins_per_dimension: Sequence[int],
+    edges_per_dimension: Optional[Sequence[Optional[Sequence[float]]]] = None,
 ) -> DiscretizationConfig:
     """Convenience wrapper to create a :class:`DiscretizationConfig` instance."""
 
@@ -22,6 +23,7 @@ def build_discretization_config(
         bins_per_dimension=tuple(bins_per_dimension),
         observation_low=np.asarray(observation_low, dtype=float),
         observation_high=np.asarray(observation_high, dtype=float),
+        edges_per_dimension=tuple(edges_per_dimension) if edges_per_dimension is not None else None,
     )
 
 
