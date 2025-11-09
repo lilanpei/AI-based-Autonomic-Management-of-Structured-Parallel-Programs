@@ -13,6 +13,9 @@ produced by `utilities/configuration.yml`.
 | `sarsa_agent.py` | Tabular SARSA agent with observation discretisation, epsilon decay, optional eligibility traces (SARSA(λ)), and persistence helpers. |
 | `train_sarsa.py` | Command-line training loop with logging, checkpointing, eligibility trace controls, and metric export. |
 | `test_sarsa.py` | Deterministic policy roll-out with run-directory logging and per-episode plotting (stdout or logger-backed). |
+| `dqn_agent.py` | Lightweight neural DQN (two hidden layers) with replay buffer, target network, and observation normalisation. |
+| `train_dqn.py` | DQN training loop mirroring SARSA's CLI, logging tables, checkpointing cadence, and evaluation hooks. |
+| `test_dqn.py` | Greedy evaluation tool with the same per-step reporting/plotting pipeline as the SARSA tester. |
 | `plot_training.py` | Utility to regenerate training plots from stored metrics or in-memory episode lists. |
 | `utils.py` | Shared helpers (discretisation factory, logging, run directory management, JSON export). |
 | `../compare_policies.py` | Compare trained SARSA against reactive baselines on a shared single-episode plot. |
@@ -92,7 +95,34 @@ Each run directory includes:
 Interrupting training with `Ctrl+C` triggers a graceful shutdown that persists
 `models/sarsa_interrupt.pkl` and notes how many episodes completed.
 
-## Evaluating a Saved Model
+## Training the Lightweight DQN
+
+```bash
+python -m autoscaling_env.rl.train_dqn \
+  --episodes 120 \
+  --max-steps 30 \
+  --step-duration 8 \
+  --observation-window 8 \
+  --initial-workers 12 \
+  --learning-rate 1e-3 \
+  --replay-capacity 50000 \
+  --batch-size 64 \
+  --target-update 500 \
+  --epsilon-start 0.4 --epsilon-end 0.05 --epsilon-decay 0.995 \
+  --eval-episodes 3
+```
+
+Highlights:
+
+- **Architecture**: Two hidden layers (configurable via `--hidden-layers`) optimised for fast inference during live runs.
+- **Replay buffer**: Uniform sampling with warmup and optional gradient clipping.
+- **Double DQN**: Periodic target network sync (`--target-update`).
+- **Normalization**: Observations scaled via environment bounds for training and inference parity.
+- **Logging parity**: Emits the same per-step tables as SARSA (`train_dqn.py`/`test_dqn.py`).
+
+Episode artefacts mirror SARSA but live under `runs/dqn_run_<timestamp>/` with `.pt` checkpoints.
+
+## Evaluating Saved Models
 
 ```bash
 python -m autoscaling_env.rl.test_sarsa \
@@ -102,11 +132,18 @@ python -m autoscaling_env.rl.test_sarsa \
   --step-duration 8 \
   --observation-window 8 \
   --initial-workers 12 \
+
+python -m autoscaling_env.rl.test_dqn \
+  --model autoscaling_env/rl/runs/dqn_run_<timestamp>/models/dqn_final.pt \
+  --episodes 5 \
+  --max-steps 30 \
+  --step-duration 8 \
+  --observation-window 8 \
+  --initial-workers 12 \
+
 ```
 
-The evaluation script executes a greedy policy (always selecting the
-highest-valued action) and prints per-episode summaries. A JSON report is written
-via `--output` (default `runs/eval_results.json`).
+Both scripts execute greedy roll-outs (SARSA via Q-table lookup, DQN via the neural policy) and print matching per-episode summaries. JSON reports are written via `--output` (default `runs/eval_results.json` for SARSA, `runs/dqn_eval_results.json` for DQN).
 
 ### Compare Against Reactive Baselines on a Single Episode
 

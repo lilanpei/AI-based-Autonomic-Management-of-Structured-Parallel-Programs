@@ -27,22 +27,22 @@ def build_discretization_config(
     )
 
 
-def prepare_output_directory(base_dir: Path | str) -> Path:
+def prepare_output_directory(base_dir: Path | str, prefix: str = "sarsa_run") -> Path:
     """Create an experiment directory for logs, models, and plots."""
 
     base_path = Path(base_dir)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    experiment_dir = base_path / f"sarsa_run_{timestamp}"
+    experiment_dir = base_path / f"{prefix}_{timestamp}"
     (experiment_dir / "logs").mkdir(parents=True, exist_ok=True)
     (experiment_dir / "models").mkdir(exist_ok=True)
     (experiment_dir / "plots").mkdir(exist_ok=True)
     return experiment_dir
 
 
-def configure_logging(log_dir: Path) -> logging.Logger:
+def configure_logging(log_dir: Path, name: str = "sarsa") -> logging.Logger:
     """Set up a rotating logger that writes to stdout and file."""
 
-    logger = logging.getLogger("sarsa")
+    logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
 

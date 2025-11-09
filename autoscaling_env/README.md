@@ -10,7 +10,7 @@ The `autoscaling_env` package houses the **OpenFaaS Autoscaling Gym Environment*
 |------|---------|
 | `openfaas_autoscaling_env.py` | Gym environment (9-D observations, 3 discrete actions) with mirrored enqueue telemetry |
 | `baselines/` | Reactive policies and helpers |
-| `rl/` | SARSA agent, training/eval utilities |
+| `rl/` | SARSA & lightweight DQN agents plus training/eval utilities |
 | `compare_policies.py` | One-shot evaluation across policies |
 
 ---
@@ -60,15 +60,22 @@ cd rl
 python train_sarsa.py --episodes 100 --max-steps 30 --step-duration 8 \
     --initial-workers 12 --eval-episodes 3 --phase-shuffle --phase-shuffle-seed 42
 
-# 3. Evaluate a trained model
-python test_sarsa.py --model runs/sarsa_run_<timestamp>/models/sarsa_final.pkl --initial-workers 12
+# 3. Train lightweight DQN (120 episodes × 30 steps)
+python train_dqn.py --episodes 120 --max-steps 30 --step-duration 8 \
+    --initial-workers 12 --eval-episodes 3
 
-# 4. Compare SARSA vs reactive policies
+# 4. Evaluate trained models
+python test_sarsa.py --model runs/sarsa_run_<timestamp>/models/sarsa_final.pkl --initial-workers 12
+python test_dqn.py --model runs/dqn_run_<timestamp>/models/dqn_final.pt --initial-workers 12
+
+# 5. Compare SARSA vs reactive policies
 python compare_policies.py --model rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
     --initial-workers 12 --max-steps 30 --agents agent reactiveaverage reactivemaximum
 ```
 
-Outputs include per-step logs, aggregated metrics, and plot artefacts under `autoscaling_env/runs/`.
+Each trainer creates timestamped run directories (e.g., `sarsa_run_*`, `dqn_run_*`) with per-step logs,
+metrics, checkpoints, and plots. Evaluation scripts mirror the SARSA-style tabular reporting and per-episode
+figures. Outputs live under `autoscaling_env/runs/`.
 
 ---
 
@@ -115,8 +122,9 @@ Reward knobs live under `reward` in `utilities/configuration.yml` (targets, thre
 
 - **ReactiveAverage / ReactiveMaximum** – Horizon-based heuristics that track mirrored enqueue totals to estimate busy workers (see `baselines/README.md`).
 - **SARSA** – Tabular agent with discretised observations, eligibility traces (λ) and epsilon-greedy exploration (details in `rl/README.md`).
+- **Lightweight DQN** – Two-layer neural network with replay buffer, Double DQN target updates, and observation normalisation for fast inference (details in `rl/README.md`).
 
-Training artefacts include `training_metrics.json`, QoS/reward plots, and `training_state_visits.json` for coverage analysis.
+Training artefacts include `training_metrics.json`, QoS/reward plots, `training_state_visits.json` for SARSA state coverage, and per-run checkpoints (`.pkl`/`.pt`).
 
 ---
 

@@ -19,7 +19,7 @@ This project implements an **RL-based autoscaling system** for serverless parall
 
 1. **OpenFaaS Functions**: Emitter, Worker (scalable), Collector (gamma-sampled image workloads)
 2. **Autoscaling Environment**: Gym-compatible RL environment
-3. **RL Agents**: SARSA
+3. **RL Agents**: SARSA, lightweight DQN
 4. **Baseline Policies**: ReactiveAverage, ReactiveMaximum
 5. **Orchestrator**: Workflow management and monitoring
 
@@ -38,12 +38,15 @@ AI-based-Autonomic-Management-of-Structured-Parallel-Programs/
 │   │   ├── logs/                     # Baseline evaluation logs (gitignored)
 │   │   ├── plots/                    # Baseline plots (gitignored)
 │   │   └── README.md
-│   ├── rl/                           # SARSA training + evaluation toolkit
-│   │   ├── sarsa_agent.py
-│   │   ├── train_sarsa.py
-│   │   ├── test_sarsa.py             # Detailed logging & per-episode plotting
-│   │   ├── plot_training.py
-│   │   ├── utils.py
+│   ├── rl/                           # RL agents (SARSA + lightweight DQN) & tooling
+│   │   ├── sarsa_agent.py            # Tabular SARSA agent
+│   │   ├── dqn_agent.py              # Compact neural DQN agent
+│   │   ├── train_sarsa.py            # SARSA training CLI with per-step logs
+│   │   ├── train_dqn.py              # DQN training CLI mirroring SARSA workflow
+│   │   ├── test_sarsa.py             # SARSA evaluation & plotting
+│   │   ├── test_dqn.py               # DQN evaluation & plotting
+│   │   ├── plot_training.py          # Training curve renderer
+│   │   ├── utils.py                  # Shared helpers (logging, directories)
 │   │   └── README.md
 │   └── runs/                         # Timestamped evaluation/comparison outputs (gitignored)
 │       └── comparison/
@@ -91,10 +94,13 @@ RL Agent observes: [input_q, worker_q, result_q, output_q, workers,
 ```
 1. Observe: 9D state [input_q, worker_q, result_q, output_q, workers,
                       avg_time, max_time, arrival_rate, qos_rate]
-2. Decide: SARSA agent selects action {-1, 0, +1}
+2. Decide: RL agent (tabular SARSA or lightweight DQN) selects action {-1, 0, +1}
+           via epsilon-greedy exploration
 3. Act: Scale workers up/down via Kubernetes API
 4. Reward: Based on QoS, queue length, worker cost, scaling penalty
-5. Learn: Update Q-table using SARSA (on-policy TD control)
+5. Learn:
+   - **SARSA**: On-policy TD update of the discretised Q-table (optionally with eligibility traces)
+   - **DQN**: Store transition, sample mini-batches from replay, and apply Double-DQN updates to the policy network
 ```
 
 ---
@@ -122,7 +128,7 @@ cd autoscaling_env
 python test_reactive_baselines.py --agent both --steps 50 --step-duration 10 --horizon 10
 ```
 
-### **3. Train SARSA Agent**
+### **3. Train SARSA Agent (tabular)**
 
 ```bash
 cd autoscaling_env/rl
@@ -133,15 +139,33 @@ Each run automatically evaluates the latest checkpoint every `--checkpoint-every
 episodes (and at the end of training), logging mean ± std reward/QoS metrics to
 `evaluation_metrics.json` alongside the usual `training_metrics.json`.
 
-### **4. Evaluate Trained Model**
+### **4. Train DQN Agent (lightweight)**
 
 ```bash
-python test_sarsa.py --model models/sarsa/sarsa_final.pkl --initial-workers 12
+cd autoscaling_env/rl
+python train_dqn.py --episodes 120 --max-steps 30 --step-duration 8 --initial-workers 12 --eval-episodes 3
 ```
+
+The DQN trainer mirrors SARSA's reporting: timestamped `dqn_run_*` directories with
+per-step logs, checkpoints (`.pt`), `training_metrics.json`, optional
+`evaluation_metrics.json`, and plots.
+
+### **5. Evaluate Trained Model**
+
+```bash
+# Evaluate SARSA
+python test_sarsa.py --model runs/sarsa_run_<timestamp>/models/sarsa_final.pkl --initial-workers 12
+
+# Evaluate DQN
+python test_dqn.py --model runs/dqn_run_<timestamp>/models/dqn_final.pt --initial-workers 12
+```
+
+Both evaluation scripts now emit SARSA-style per-step tables, per-episode plots,
+and JSON summaries inside timestamped `*_eval_*` directories.
 
 ---
 
-### **5. Plot Single-Episode Comparison (SARSA vs Baselines)**
+### **6. Plot Single-Episode Comparison (SARSA vs Baselines)**
 
 ```bash
 cd autoscaling_env/rl
@@ -181,12 +205,11 @@ new simulations using `--plot-only --input-dir <existing_run> [--agents ...]`.
 - **Workload**: Task generator draws processing times from a gamma distribution (mean 1.5 s, shape 4.0 by default) and derives image sizes via the calibrated quadratic model
 - **Episode Termination**: Task-driven (ends when all tasks complete or max steps reached)
 
-### **3. SARSA & Evaluation Toolkit**
+### **3. RL Agent Toolkit**
 
-- **Algorithm**: On-policy TD control
-- **State Discretization**: Tile coding
-- **Exploration**: Epsilon-greedy
-- **Evaluation utilities**: `test_sarsa.py` now manages run directories, logging, and per-episode plots. `compare_policies.py` captures single-episode trajectories for SARSA and both reactive baselines on shared axes.
+- **Algorithms**: Tabular SARSA with discretisation + eligibility traces; lightweight DQN with replay buffer, Double DQN target updates, and observation normalisation
+- **Training Scripts**: `train_sarsa.py` / `train_dqn.py` share CLI ergonomics, per-step logging tables, checkpointing, evaluation hooks, and plotting outputs
+- **Evaluation utilities**: `test_sarsa.py` and `test_dqn.py` manage run directories, emit the same step-by-step tables, and generate per-episode plots. `compare_policies.py` captures single-episode trajectories for SARSA and both reactive baselines on shared axes.
 
 ### **4. Baseline Policies**
 
@@ -211,6 +234,7 @@ new simulations using `--plot-only --input-dir <existing_run> [--agents ...]`.
 
 | Method          | QoS Rate | Avg Workers | Training Time | Complexity |
 |-----------------|----------|-------------|---------------|------------|
+| **DQN**         |          |             |               | Medium     |
 | **SARSA**       |          |             |               | Medium     |
 | ReactiveAverage |          |             | 0 (no train)  | Low        |
 | ReactiveMaximum |          |             | 0 (no train)  | Low        |
@@ -263,6 +287,7 @@ Key parameters in `utilities/configuration.yml`:
 - **Reward**: `reward` block with QoS target, queue target, idle threshold, and per-term weights
 - **QoS**: Task deadlines based on calibrated processing time model (DEADLINE_COEFFICIENT = 2.0)
 - **SARSA**: `learning_rate` (0.1), `gamma` (0.99), `epsilon_decay` (0.995)
+- **DQN**: Replay capacity, batch size, epsilon schedule, target update cadence are configurable via `train_dqn.py`
 
 ---
 
