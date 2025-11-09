@@ -10,10 +10,10 @@ produced by `utilities/configuration.yml`.
 
 | File | Purpose |
 | --- | --- |
-| `sarsa_agent.py` | Tabular SARSA agent with observation discretisation, epsilon decay, and persistence helpers. |
-| `train_sarsa.py` | Command-line training loop with logging, checkpointing, and metric export. |
-| `test_sarsa.py` | Deterministic policy roll-out with run-directory logging and per-episode plotting. |
-| `plot_training.py` | Utility to regenerate training plots from stored metrics. |
+| `sarsa_agent.py` | Tabular SARSA agent with observation discretisation, epsilon decay, optional eligibility traces (SARSA(λ)), and persistence helpers. |
+| `train_sarsa.py` | Command-line training loop with logging, checkpointing, eligibility trace controls, and metric export. |
+| `test_sarsa.py` | Deterministic policy roll-out with run-directory logging and per-episode plotting (stdout or logger-backed). |
+| `plot_training.py` | Utility to regenerate training plots from stored metrics or in-memory episode lists. |
 | `utils.py` | Shared helpers (discretisation factory, logging, run directory management, JSON export). |
 | `../compare_policies.py` | Compare trained SARSA against reactive baselines on a shared single-episode plot. |
 | `runs/` | Default output directory for experiments (ignored by git). |
@@ -43,6 +43,8 @@ python -m autoscaling_env.rl.train_sarsa \
   --observation-window 8 \
   --initial-workers 12 \
   --bins 4 30 4 40 16 18 18 15 20 \
+  --alpha 0.03 \
+  --trace-lambda 0.6 \
   --eval-episodes 3 \
   --phase-shuffle \
   --phase-shuffle-seed 42
@@ -59,7 +61,10 @@ Key arguments:
   of the observation vector (queues, workers, processing times, arrival rate,
   QoS). Higher values increase state resolution but enlarge the Q-table.
 - `--alpha`, `--gamma`, `--epsilon`, `--epsilon-min`, `--epsilon-decay`: SARSA
-  hyperparameters.
+  hyperparameters (`--alpha` defaults to 0.03 when traces are enabled).
+- `--trace-lambda`, `--trace-threshold`: enable eligibility traces (SARSA(λ))
+  and control decay/pruning. Set `--trace-lambda 0` to fall back to one-step
+  SARSA; the default 0.6 mirrors the configuration used in recent experiments.
 - `--checkpoint-every`: save intermediate models every _N_ episodes; when
   `--eval-episodes > 0`, each checkpoint runs greedy evaluation rollouts.
 - `--eval-episodes`: number of evaluation episodes per checkpoint (and after
@@ -92,7 +97,7 @@ Interrupting training with `Ctrl+C` triggers a graceful shutdown that persists
 ```bash
 python -m autoscaling_env.rl.test_sarsa \
   --model autoscaling_env/rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
-  --episodes 10 \
+  --episodes 5 \
   --max-steps 30 \
   --step-duration 8 \
   --observation-window 8 \
@@ -125,6 +130,14 @@ python -m autoscaling_env.compare_policies \
   --agents reactiveaverage
 ```
 
+## Eligibility Traces
+
+Eligibility traces are a feature of SARSA(λ) that allow the agent to learn from
+experiences that occurred in the past. The `--trace-lambda` option controls the
+decay rate of the traces, with higher values indicating slower decay. The
+`--trace-threshold` option controls the minimum value of the traces before they
+are pruned.
+
 ## Re-plotting Training Metrics
 
 If you adjust plotting styles or regenerate charts after cleaning the `plots/`
@@ -145,7 +158,12 @@ is saved next to the metrics file inside a `plots/` subdirectory.
 
 - **Discretisation:** Start with coarser bins, then increase select dimensions
   (e.g., worker count, QoS) once training stabilises. Remember that the total
-  number of table entries scales with the product of all bin counts.
+  number of table entries scales with the product of all bin counts. When you
+  change bin layouts, prefer training from scratch—the saved Q-table expects the
+  original discretisation.
+- **Eligibility traces:** Monitor the debug-level trace summaries emitted every
+  `--log-interval` episodes. If trace magnitudes blow up, decrease `--trace-lambda`
+  or `--alpha`; if traces decay too quickly, lower `--trace-threshold`.
 - **Workflow spin-up:** Initialising the OpenFaaS workflow can take up to a
   minute; the training script logs each phase (queue reset, worker scaling,
   task generation) so you can monitor progress.

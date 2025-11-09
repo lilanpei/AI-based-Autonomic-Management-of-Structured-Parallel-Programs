@@ -23,6 +23,7 @@ from autoscaling_env.rl.sarsa_agent import (
     SARSAAgent,
     SARSAHyperparams,
 )
+from autoscaling_env.rl.plot_training import render_training_curves
 from autoscaling_env.rl.test_sarsa import evaluate_episode
 from autoscaling_env.rl.utils import (
     build_discretization_config,
@@ -36,13 +37,15 @@ from utilities.utilities import get_utc_now
 DEFAULT_DISCRETIZATION_BINS = (4, 7, 1, 1, 8, 8, 1, 5, 6)
 DEFAULT_DISCRETIZATION_EDGES = (
     [0.5, 1.5, 2.5],  # input_q
-    [0.5, 3.5, 7.5, 15.5, 31.5, 63.5],  # worker_q
+    # [0.5, 3.5, 7.5, 15.5, 31.5, 63.5],  # worker_q
+    [0.5, 2.5, 5.5, 9.5, 15.5, 30.5],  # worker_q
     None,  # result_q (unused)
     None,  # output_q (unused)
     [3.5, 7.5, 11.5, 12.5, 16.5, 20.5, 24.5],  # workers
     [0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0],  # avg_time
     None,  # max_time (unused)
-    None,  # arrival_rate (linear bins)
+    # None,  # arrival_rate (linear bins)
+    [0.15, 0.5, 1.5, 3.5],  # arrival_rate
     [0.5, 0.8, 0.9, 0.95, 0.999],  # qos (percent-style thresholds -> fraction)
 )
 
@@ -71,11 +74,23 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="When resuming, reset epsilon to the CLI value (applied after any hyperparameter reset)",
     )
-    parser.add_argument("--epsilon", type=float, default=0.5, help="Initial epsilon for epsilon-greedy policy")
-    parser.add_argument("--epsilon-min", type=float, default=0.18, help="Minimum epsilon after decay")
-    parser.add_argument("--epsilon-decay", type=float, default=0.993, help="Episode-wise epsilon decay factor")
-    parser.add_argument("--alpha", type=float, default=0.045, help="Learning rate (alpha)")
-    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor (gamma)")
+    parser.add_argument("--epsilon", type=float, default=0.55, help="Initial epsilon for epsilon-greedy policy")
+    parser.add_argument("--epsilon-min", type=float, default=0.22, help="Minimum epsilon after decay")
+    parser.add_argument("--epsilon-decay", type=float, default=0.996, help="Episode-wise epsilon decay factor")
+    parser.add_argument("--alpha", type=float, default=0.03, help="Learning rate (alpha)")
+    parser.add_argument("--gamma", type=float, default=0.985, help="Discount factor (gamma)")
+    parser.add_argument(
+        "--trace-lambda",
+        type=float,
+        default=0.6,
+        help="Eligibility trace decay parameter λ (0 disables traces)",
+    )
+    parser.add_argument(
+        "--trace-threshold",
+        type=float,
+        default=1e-5,
+        help="Prune eligibility traces whose absolute value falls below this threshold",
+    )
     parser.add_argument(
         "--bins",
         type=int,
@@ -103,7 +118,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--eval-episodes",
         type=int,
-        default=2,
+        default=3,
         help="Number of evaluation episodes to run at each checkpoint (0 to disable)",
     )
     parser.add_argument(
@@ -167,6 +182,8 @@ def create_agent(env: OpenFaaSAutoscalingEnv, args: argparse.Namespace) -> SARSA
                 epsilon=args.epsilon,
                 epsilon_min=args.epsilon_min,
                 epsilon_decay=args.epsilon_decay,
+                trace_lambda=args.trace_lambda,
+                trace_threshold=args.trace_threshold,
             )
             args.resume_reset_epsilon = True
 
@@ -194,6 +211,8 @@ def create_agent(env: OpenFaaSAutoscalingEnv, args: argparse.Namespace) -> SARSA
         epsilon=args.epsilon,
         epsilon_min=args.epsilon_min,
         epsilon_decay=args.epsilon_decay,
+        trace_lambda=args.trace_lambda,
+        trace_threshold=args.trace_threshold,
     )
 
     return SARSAAgent(
@@ -203,109 +222,34 @@ def create_agent(env: OpenFaaSAutoscalingEnv, args: argparse.Namespace) -> SARSA
     )
 
 
-def plot_training_curves(
-    training_metrics: List[Dict[str, float]],
-    eval_metrics: List[Dict[str, float]],
+def plot_state_visit_distribution(
+    visit_counts: Counter[Tuple[int, ...]],
     output_dir: Path,
 ) -> None:
+    if not visit_counts:
+        return
+
     import matplotlib.pyplot as plt
 
-    episodes = np.arange(1, len(training_metrics) + 1)
-    total_rewards = np.array([m["total_reward"] for m in training_metrics])
-    final_qos = np.array([m["final_qos"] for m in training_metrics])
-    epsilons = np.array([m["epsilon"] for m in training_metrics])
+    counts = np.array(list(visit_counts.values()), dtype=np.int64)
 
-    def _smooth(values: np.ndarray, window: int) -> np.ndarray:
-        if values.size == 0 or window <= 1:
-            return values
-        window = min(window, values.size)
-        kernel = np.ones(window, dtype=np.float64) / window
-        return np.convolve(values, kernel, mode="same")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.set_title("State Visit Count Distribution")
+    ax.set_xlabel("Visit count per state")
+    ax.set_ylabel("Number of states")
 
-    smooth_window = 0
-    if len(training_metrics) >= 3:
-        smooth_window = min(15, max(3, len(training_metrics) // 10 or 3))
+    bins = np.histogram_bin_edges(counts, bins="auto")
+    ax.hist(counts, bins=bins, color="tab:blue", alpha=0.7, edgecolor="black")
+    ax.set_xscale("log")
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.5)
 
-    rewards_smooth = _smooth(total_rewards, smooth_window) if smooth_window else total_rewards
-    final_qos_smooth = _smooth(final_qos, smooth_window) if smooth_window else final_qos
-    final_qos_pct = final_qos * 100.0
-    final_qos_smooth_pct = final_qos_smooth * 100.0
-
-    fig, ax1 = plt.subplots(figsize=(12, 6))
-    ax1.set_title("SARSA Training Progress")
-    ax1.set_xlabel("Episode")
-    ax1.set_ylabel("Total Reward", color="tab:blue")
-    ax1.plot(episodes, total_rewards, label="Total Reward (raw)", color="tab:blue", alpha=0.35, linewidth=1)
-    ax1.plot(episodes, rewards_smooth, label="Total Reward (smoothed)", color="tab:blue", linewidth=2)
-    ax1.tick_params(axis="y", labelcolor="tab:blue")
-    ax1.grid(True, alpha=0.3)
-
-    if eval_metrics:
-        eval_episodes = np.array([m["episode"] for m in eval_metrics])
-        eval_rewards = np.array([m["mean_total_reward"] for m in eval_metrics])
-        ax1.plot(
-            eval_episodes,
-            eval_rewards,
-            marker="o",
-            color="tab:orange",
-            linestyle="-",
-            linewidth=1.5,
-            label="Evaluation Reward (mean)",
-        )
-
-    ax2 = ax1.twinx()
-    ax2.set_ylabel("Final QoS [%]", color="tab:green")
-    ax2.plot(
-        episodes,
-        final_qos_pct,
-        label="Final QoS (raw)",
-        color="tab:green",
-        linestyle="--",
-        alpha=0.35,
-        linewidth=1,
-    )
-    ax2.plot(
-        episodes,
-        final_qos_smooth_pct,
-        label="Final QoS (smoothed)",
-        color="tab:green",
-        linestyle="-",
-        linewidth=2,
-    )
-    ax2.tick_params(axis="y", labelcolor="tab:green")
-
-    if eval_metrics:
-        eval_episodes = np.array([m["episode"] for m in eval_metrics])
-        eval_qos = np.array([m["mean_final_qos"] for m in eval_metrics]) * 100.0
-        ax2.plot(
-            eval_episodes,
-            eval_qos,
-            marker="s",
-            color="tab:olive",
-            linestyle="--",
-            linewidth=1.5,
-            label="Evaluation Final QoS (mean)",
-        )
-
-    ax3 = ax1.twinx()
-    ax3.spines["right"].set_position(("outward", 60))
-    ax3.set_ylabel("Epsilon", color="tab:red")
-    ax3.plot(episodes, epsilons, label="Epsilon", color="tab:red", linestyle=":")
-    ax3.tick_params(axis="y", labelcolor="tab:red")
-
-    handles, labels = [], []
-    for axis in (ax1, ax2, ax3):
-        h, l = axis.get_legend_handles_labels()
-        handles.extend(h)
-        labels.extend(l)
-    if handles:
-        ax1.legend(handles, labels, loc="best", frameon=False)
-
-    fig.tight_layout()
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
-    fig.savefig(plots_dir / "training_curves.png", dpi=200)
+    fig.tight_layout()
+    fig.savefig(plots_dir / "state_visit_distribution.png", dpi=200)
     plt.close(fig)
+
+
 
 
 def evaluate_checkpoint(
@@ -353,6 +297,7 @@ def evaluate_checkpoint(
                 episode_idx=eval_idx,
                 total_episodes=args.eval_episodes,
                 seed=episode_seed,
+                logger=logger,
             )
             records.append(record)
 
@@ -527,6 +472,7 @@ def main() -> None:
         episode_seed = base_seed + episode - 1
         np.random.seed(episode_seed)
         random.seed(episode_seed)
+        agent.reset_traces()
         observation = env.reset(seed=episode_seed)
         state = agent.discretize(observation)
         action = agent.select_action(state)
@@ -683,15 +629,29 @@ def main() -> None:
 
     write_json({"episodes": metrics}, experiment_dir / "training_metrics.json")
     visit_summary_path = experiment_dir / "training_state_visits.json"
+    total_state_space = int(np.prod(agent.discretization.bins_per_dimension))
     visit_payload = {
         "total_unique_states": len(state_visit_counts),
         "total_visits": sum(state_visit_counts.values()),
+        "total_state_space": total_state_space,
+        "coverage": (len(state_visit_counts) / total_state_space) if total_state_space > 0 else 0.0,
+        "visit_stats": {
+            "mean": float(np.mean(list(state_visit_counts.values()))) if state_visit_counts else 0.0,
+            "median": float(np.median(list(state_visit_counts.values()))) if state_visit_counts else 0.0,
+            "max": int(max(state_visit_counts.values())) if state_visit_counts else 0,
+            "min": int(min(state_visit_counts.values())) if state_visit_counts else 0,
+        },
         "counts": [
-            {"state": state, "visits": count}
+            {
+                "state": list(state),
+                "visits": count,
+                "q_values": agent.q_values(state).tolist(),
+            }
             for state, count in state_visit_counts.most_common()
         ],
     }
     write_json(visit_payload, visit_summary_path)
+    plot_state_visit_distribution(state_visit_counts, experiment_dir)
     logger.info(
         "Recorded %d unique states with %d total visits (details in %s)",
         visit_payload["total_unique_states"],
@@ -700,7 +660,19 @@ def main() -> None:
     )
     if eval_history:
         write_json({"checkpoints": eval_history}, experiment_dir / "evaluation_metrics.json")
-    plot_training_curves(metrics, eval_history, experiment_dir)
+
+    plots_dir = experiment_dir / "plots"
+    plots_dir.mkdir(exist_ok=True)
+    episodes_for_plot = metrics
+    try:
+        render_training_curves(
+            episodes_for_plot,
+            eval_history,
+            plots_dir / "training_curves.png",
+            title="SARSA Training Progress",
+        )
+    except ValueError as exc:
+        logger.warning("Skipping training plot generation: %s", exc)
 
     env.close()
     logger.info("Training complete. Metrics stored at %s", experiment_dir)

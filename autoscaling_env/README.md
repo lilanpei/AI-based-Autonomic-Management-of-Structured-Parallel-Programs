@@ -8,7 +8,7 @@ The `autoscaling_env` package houses the **OpenFaaS Autoscaling Gym Environment*
 
 | Path | Purpose |
 |------|---------|
-| `openfaas_autoscaling_env.py` | Gym environment (9-D observations, 3 discrete actions) |
+| `openfaas_autoscaling_env.py` | Gym environment (9-D observations, 3 discrete actions) with mirrored enqueue telemetry |
 | `baselines/` | Reactive policies and helpers |
 | `rl/` | SARSA agent, training/eval utilities |
 | `compare_policies.py` | One-shot evaluation across policies |
@@ -20,6 +20,8 @@ The `autoscaling_env` package houses the **OpenFaaS Autoscaling Gym Environment*
 ### Observation Vector (9)
 
 `[input_queue, worker_queue, result_queue, output_queue, workers, avg_processing_time, max_processing_time, arrival_rate, qos_rate]`
+
+> **Arrival rate** is now derived from a mirrored Redis enqueue counter (`<queue>:enqueued_total`), eliminating the previous lag between submissions and completions.
 
 ### Action Space
 
@@ -74,6 +76,7 @@ Outputs include per-step logs, aggregated metrics, and plot artefacts under `aut
 
 - **Task-aware episode termination** – Finish early when all queues drain; terminal penalties/bonuses configured in `utilities/configuration.yml`.
 - **Phase-based workload generator** – Constant, burst, or oscillating task rates controlled by YAML config.
+- **Mirrored enqueue telemetry** – Task submissions increment `worker_queue:enqueued_total`, allowing step-level arrival-rate estimates without waiting for completion samples.
 - **Accurate QoS tracking** – Metrics computed from completion timestamps (not sampling instants).
 - **Sliding observation window** – Rolling averages of processing times, arrivals, and QoS over a configurable horizon.
 - **Strict scaling constraints** – Worker counts clipped to `min_workers` … `max_workers` each step.
@@ -110,8 +113,8 @@ Reward knobs live under `reward` in `utilities/configuration.yml` (targets, thre
 
 ## Baselines & RL Agents
 
-- **ReactiveAverage / ReactiveMaximum** – Horizon-based heuristics (see `baselines/README.md`).
-- **SARSA** – Tabular agent with discretised observations and epsilon-greedy exploration (details in `rl/README.md`).
+- **ReactiveAverage / ReactiveMaximum** – Horizon-based heuristics that track mirrored enqueue totals to estimate busy workers (see `baselines/README.md`).
+- **SARSA** – Tabular agent with discretised observations, eligibility traces (λ) and epsilon-greedy exploration (details in `rl/README.md`).
 
 Training artefacts include `training_metrics.json`, QoS/reward plots, and `training_state_visits.json` for coverage analysis.
 

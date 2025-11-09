@@ -401,10 +401,26 @@ def get_phase_rate(phase_config_data, time_in_phase):
         return base_rate
 
 
+_ENQUEUE_LUA = """
+redis.call('LPUSH', KEYS[1], ARGV[1])
+return redis.call('INCR', KEYS[2])
+"""
+
+
+def _get_enqueue_script(redis_client):
+    script = getattr(redis_client, "_enqueue_with_counter", None)
+    if script is None:
+        script = redis_client.register_script(_ENQUEUE_LUA)
+        setattr(redis_client, "_enqueue_with_counter", script)
+    return script
+
+
 def push_task_to_worker_queue(redis_client, queue_name, task_json):
-    """Push a task to Redis queue with error handling"""
+    """Push a task to Redis queue and mirror enqueues into a counter."""
+    counter_key = f"{queue_name}:enqueued_total"
     try:
-        redis_client.lpush(queue_name, task_json)
+        enqueue_script = _get_enqueue_script(redis_client)
+        enqueue_script(keys=[queue_name, counter_key], args=[task_json])
         return True
     except Exception as e:
         logger.error(f"Failed to push task: {e}")

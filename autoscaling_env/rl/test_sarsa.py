@@ -154,7 +154,7 @@ def plot_overview(records: List[Dict[str, object]], plots_dir: Path) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True, help="Path to SARSA model (.pkl)")
-    parser.add_argument("--episodes", type=int, default=10, help="Evaluation episodes")
+    parser.add_argument("--episodes", type=int, default=5, help="Evaluation episodes")
     parser.add_argument("--max-steps", type=int, default=30, help="Max steps per episode")
     parser.add_argument("--step-duration", type=int, default=8, help="Seconds per action step")
     parser.add_argument("--observation-window", type=int, default=8, help="Observation window size")
@@ -173,16 +173,24 @@ def evaluate_episode(
     episode_idx: int,
     total_episodes: int,
     seed: int | None = None,
+    logger=None,
 ) -> Dict[str, object]:
-    print("\n" + "=" * 70)
-    print(f"EVALUATING SARSA (Episode {episode_idx}/{total_episodes})")
-    if hasattr(agent, "model_path") and agent.model_path:
-        print(f"[MODEL] Loaded SARSA agent from: {agent.model_path}")
-    print("=" * 70)
+    def _log(msg: str) -> None:
+        if logger is not None:
+            logger.info(msg)
+        else:
+            print(msg)
 
-    print("\n[1/3] Resetting environment...")
+    _log("\n")
+    _log("=" * 70)
+    _log(f"EVALUATING SARSA (Episode {episode_idx}/{total_episodes})")
+    if hasattr(agent, "model_path") and agent.model_path:
+        _log(f"[MODEL] Loaded SARSA agent from: {agent.model_path}")
+    _log("=" * 70)
+    _log("\n")
+    _log("[1/3] Resetting environment...")
     observation = env.reset(seed=seed)
-    print(f"✓ Initial state: {np.array2string(observation, precision=2)}")
+    _log(f"✓ Initial state: {np.array2string(observation, precision=2)}")
 
     state = agent.discretize(observation)
     action = agent.greedy_action(state)
@@ -196,7 +204,7 @@ def evaluate_episode(
     max_times: List[float] = []
     arrival_rates: List[float] = []
 
-    print(f"\n[2/3] Running up to {max_steps} steps...")
+    _log(f"[2/3] Running up to {max_steps} steps...")
     header_printed = False
 
     for step in range(1, max_steps + 1):
@@ -225,7 +233,7 @@ def evaluate_episode(
             time_offset = step * env.step_duration
 
         if not header_printed:
-            print(
+            header = (
                 f"{'Step':<6} "
                 f"{'Time[s]':>10} "
                 f"{'Action':>10} "
@@ -242,11 +250,12 @@ def evaluate_episode(
                 f"{'ARR':>9} "
                 f"{'Reward':>11}"
             )
+            _log(header)
             header_printed = True
 
         action_map = {0: "-1", 1: "0", 2: "+1"}
         qos_pct = qos * 100.0
-        print(
+        row = (
             f"{step:<6} "
             f"{time_offset:>10.2f} "
             f"{action_map.get(action, str(action)):>10} "
@@ -263,12 +272,14 @@ def evaluate_episode(
             f"{arrival_rates[-1]:>9.2f} "
             f"{reward:>11.2f}"
         )
+        _log(row)
 
         state = next_state
         action = next_action
 
         if done:
-            print(f"\n[INFO] Episode finished at step {step}")
+            _log("\n")
+            _log(f"[INFO] Episode finished at step {step}")
             break
 
     steps_taken = len(rewards)
@@ -289,18 +300,20 @@ def evaluate_episode(
 
     max_workers = max(worker_counts) if worker_counts else float(getattr(env, "initial_workers", 0))
 
-    print("\n[3/3] Summary Statistics")
-    print("-" * 70)
-    print(f"Total Steps:        {steps_taken}")
-    print(f"Total Reward:       {total_reward:.2f}")
-    print(f"Mean Reward:        {mean_reward:.2f} ± {std_reward:.2f}")
-    print(f"Mean QoS Rate:      {mean_qos:.2%}")
-    print(f"Final QoS:  {final_qos_total:.2%}")
-    print(f"Mean Workers:       {mean_workers:.1f}")
-    print(f"Max Workers:        {max_workers:.1f}")
-    print(f"Scaling Actions:    {scaling_actions}")
-    print(f"No-op Actions:      {noop_actions}")
-    print("=" * 70 + "\n")
+    _log("\n")
+    _log("[3/3] Summary Statistics")
+    _log("-" * 70)
+    _log(f"Total Steps:        {steps_taken}")
+    _log(f"Total Reward:       {total_reward:.2f}")
+    _log(f"Mean Reward:        {mean_reward:.2f} ± {std_reward:.2f}")
+    _log(f"Mean QoS Rate:      {mean_qos:.2%}")
+    _log(f"Final QoS:  {final_qos_total:.2%}")
+    _log(f"Mean Workers:       {mean_workers:.1f}")
+    _log(f"Max Workers:        {max_workers:.1f}")
+    _log(f"Scaling Actions:    {scaling_actions}")
+    _log(f"No-op Actions:      {noop_actions}")
+    _log("=" * 70)
+    _log("\n")
 
     return {
         "rewards": rewards,

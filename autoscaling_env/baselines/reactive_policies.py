@@ -15,6 +15,22 @@ Both calculate optimal parallelism based on:
 import numpy as np
 
 
+def _estimate_active_tasks(
+    total_enqueued: float,
+    worker_queue: float,
+    result_queue: float,
+    output_queue: float,
+) -> float:
+    """Estimate tasks currently being serviced by workers."""
+
+    # total_enqueued tracks everything pushed into the worker queue. Anything still
+    # sitting in the worker, result, or output queues has not yet left the system,
+    # so we subtract those counts to approximate tasks actively being processed.
+    downstream = worker_queue + result_queue + output_queue
+    active = max(0.0, total_enqueued - downstream)
+    return active
+
+
 class ReactiveAverage:
     """
     Reactive Average-Based Policy (Baseline 1)
@@ -35,6 +51,7 @@ class ReactiveAverage:
         self.name = "Reactive-Average"
         self.horizon_seconds = max(horizon_seconds, 0.1)
         self.safety_factor = max(safety_factor, 1.0)
+        self._enqueued_total = 0.0
 
     def set_horizon(self, horizon_seconds: float) -> None:
         """Allow callers to update the planning horizon dynamically."""
@@ -60,6 +77,7 @@ class ReactiveAverage:
                safety factor, and convert to an optimal worker target.
         """
         input_q, worker_q, result_q, output_q, workers, avg_time, max_time, arrival_rate, qos_rate = observation
+        total_enqueued = self._enqueued_total
 
         service_time = max(avg_time, 0.1)  # seconds per task (avg case)
         horizon = max(self.horizon_seconds, service_time)
@@ -73,11 +91,17 @@ class ReactiveAverage:
         # Workers needed to handle expected incoming tasks during the horizon
         workers_for_arrival = arrival_rate * service_time if arrival_rate > 0 else 0
 
+        # Estimate how many workers are currently busy.
+        active_tasks = _estimate_active_tasks(total_enqueued, worker_q, result_q, output_q)
+        collector_adjustment = 1.0 if active_tasks > 0 else 0.0
+        busy_workers = min(workers, max(0.0, active_tasks - collector_adjustment))
+
         optimal_workers = (workers_for_queue + workers_for_arrival) * self.safety_factor
         optimal_workers = max(1.0, optimal_workers)
 
-        # Calculate difference
-        delta = optimal_workers - workers
+        # Calculate difference relative to currently busy workers rather than the
+        # raw replica count so idle capacity doesn't mask backlog pressure.
+        delta = optimal_workers - busy_workers
 
         # Map delta to action
         if delta >= 0.5:
@@ -93,6 +117,20 @@ class ReactiveAverage:
             'policy': 'reactive_average',
             'approach': 'queue-based with average processing time'
         }
+
+    def reset(self) -> None:
+        self._enqueued_total = 0.0
+
+    def update_from_info(self, info: dict | None) -> None:
+        if not info:
+            return
+        value = info.get("enqueued_total")
+        if value is None:
+            return
+        try:
+            self._enqueued_total = max(0.0, float(value))
+        except (TypeError, ValueError):
+            pass
 
 
 class ReactiveMaximum:
@@ -114,6 +152,7 @@ class ReactiveMaximum:
         self.name = "Reactive-Maximum"
         self.horizon_seconds = max(horizon_seconds, 0.1)
         self.safety_factor = max(safety_factor, 1.0)
+        self._enqueued_total = 0.0
 
     def set_horizon(self, horizon_seconds: float) -> None:
         """Allow callers to update the planning horizon dynamically."""
@@ -135,6 +174,7 @@ class ReactiveMaximum:
         service time, plus a safety factor.
         """
         input_q, worker_q, result_q, output_q, workers, avg_time, max_time, arrival_rate, qos_rate = observation
+        total_enqueued = self._enqueued_total
 
         service_time = max(max_time, avg_time, 0.1)
         horizon = max(self.horizon_seconds, service_time)
@@ -144,11 +184,15 @@ class ReactiveMaximum:
         workers_for_queue = (worker_q / tasks_per_worker) if tasks_per_worker > 0 else 0
         workers_for_arrival = arrival_rate * service_time if arrival_rate > 0 else 0
 
+        active_tasks = _estimate_active_tasks(total_enqueued, worker_q, result_q, output_q)
+        collector_adjustment = 1.0 if active_tasks > 0 else 0.0
+        busy_workers = min(workers, max(0.0, active_tasks - collector_adjustment))
+
         optimal_workers = (workers_for_queue + workers_for_arrival) * self.safety_factor
         optimal_workers = max(1.0, optimal_workers)
 
-        # Calculate difference
-        delta = optimal_workers - workers
+        # Calculate difference relative to currently busy workers.
+        delta = optimal_workers - busy_workers
 
         # Map delta to action
         if delta >= 0.5:
@@ -164,3 +208,17 @@ class ReactiveMaximum:
             'policy': 'reactive_maximum',
             'approach': 'queue-based with maximum processing time'
         }
+
+    def reset(self) -> None:
+        self._enqueued_total = 0.0
+
+    def update_from_info(self, info: dict | None) -> None:
+        if not info:
+            return
+        value = info.get("enqueued_total")
+        if value is None:
+            return
+        try:
+            self._enqueued_total = max(0.0, float(value))
+        except (TypeError, ValueError):
+            pass

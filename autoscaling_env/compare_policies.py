@@ -247,6 +247,8 @@ def run_reactive_episode(
 
     print("\n[1/3] Resetting environment...")
     observation = env.reset(seed=seed)
+    if hasattr(policy, "reset"):
+        policy.reset()
     print(f"✓ Initial state: {np.array2string(observation, precision=2)}")
 
     print(f"\n[2/3] Running up to {max_steps} steps...")
@@ -264,6 +266,8 @@ def run_reactive_episode(
     for step in range(1, max_steps + 1):
         action = policy.select_action(observation, training=False)
         next_obs, reward, done, info = env.step(action)
+        if hasattr(policy, "update_from_info"):
+            policy.update_from_info(info)
 
         rewards.append(reward)
         qos_rates.append(info.get("qos_rate", next_obs[8]))
@@ -401,7 +405,7 @@ def compute_agent_summary(records: List[Dict[str, List[float]]]) -> Dict[str, Di
     return {key: _compute_mean_std(values) for key, values in metrics.items()}
 
 
-def plot_step_boxplots(
+def plot_step_plots(
     records_by_agent: Dict[str, List[Dict[str, List[float]]]],
     output_path: Path,
 ) -> None:
@@ -544,7 +548,7 @@ def main() -> None:
         if not any(records_by_agent.values()):
             raise ValueError("Aggregated results do not contain step records for the requested agents")
 
-        plot_path = run_dir / "comparison_boxplots.png"
+        plot_path = run_dir / "comparison_plots.png"
         plot_step_boxplots(records_by_agent, plot_path)
         print_agent_summaries(aggregated, selected_agents)
 
@@ -561,7 +565,7 @@ def main() -> None:
     timestamp = get_utc_now().strftime("%Y%m%d_%H%M%S")
     output_dir = args.output_dir / f"compare_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
-    plot_path = output_dir / "comparison_boxplots.png"
+    plot_path = output_dir / "comparison_plots.png"
     log_path = output_dir / "comparison.log"
 
     with log_path.open("w", encoding="utf-8") as log_file:
@@ -669,7 +673,7 @@ def main() -> None:
                 raise ValueError("No agents selected for plotting")
 
             records_by_agent = {name: aggregated[name]["records"] for name in selected_agents}
-            plot_step_boxplots(records_by_agent, plot_path)
+            plot_step_plots(records_by_agent, plot_path)
             if selected_agents != all_agents:
                 print_agent_summaries(aggregated, selected_agents)
             print(f"[INFO] Aggregated results saved to {output_dir / AGGREGATED_FILENAME}")

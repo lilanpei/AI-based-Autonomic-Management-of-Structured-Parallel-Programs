@@ -184,6 +184,10 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         self.task_history = []  # (timestamp, processing_time, qos_success)
         self.queue_history = []  # (timestamp, queue_length)
         self.worker_history = []  # (timestamp, num_workers)
+        self.enqueue_history = []  # (timestamp, total_enqueued)
+        self.arrival_history = []  # (timestamp, arrival_rate)
+        self.worker_enqueue_total = 0
+        self._last_arrival_sample: tuple[float, float] | None = None
         self.processed_task_ids = set()  # Track which tasks we've already processed
 
         # Reset Episode statistics
@@ -426,6 +430,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             'episode_final_qos': episode_final_qos,
             'processed_tasks': len(self.task_history),
             'unfinished_tasks': unfinished_tasks,
+            'enqueued_total': self.worker_enqueue_total,
         }
 
         print(f"[REWARD] {reward:.2f} | Total: {self.total_reward:.2f}")
@@ -690,6 +695,25 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         )
         self.worker_history.append((current_time, workers))
 
+        # Mirror worker enqueue counter
+        worker_queue = self.config.get("worker_queue_name")
+        counter_key = f"{worker_queue}:enqueued_total"
+        current_total = self.worker_enqueue_total or 0.0
+        try:
+            counter_value = self.redis_client.get(counter_key)
+            if counter_value is not None:
+                current_total = max(0.0, float(counter_value))
+        except Exception as exc:  # noqa: BLE001 - best-effort metric pull
+            print(f"[WARNING] Failed to read enqueue counter '{counter_key}': {exc}")
+
+        if current_total < self.worker_enqueue_total:
+            # Counter was reset externally; treat as new baseline.
+            self.worker_enqueue_total = current_total
+        else:
+            self.worker_enqueue_total = current_total
+
+        self.enqueue_history.append((current_time, self.worker_enqueue_total))
+
         # Get completed tasks from output queue (sample recent tasks)
         output_queue = self.config.get("output_queue_name")
         queue_len = self.redis_client.llen(output_queue)
@@ -813,25 +837,17 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             max_processing_time = 1.5
             print(f"[WARNING] No recent tasks in observation window (total history: {len(self.task_history)})")
 
-        # Task arrival rate (from completed tasks in observation window)
-        # Count tasks that arrived (completed) in the recent window
-        if len(recent_tasks) >= 2 and len(recent_tasks) > 0:
-            time_span = current_time - window_start
-            arrival_rate = len(recent_tasks) / time_span if time_span > 0 else 0
-        else:
-            # No recent task data - check if we're still in task generation phase
-            elapsed_time = current_time - self.episode_start_time
-
-            base_rate = self.config.get("base_rate")
-            phase_definitions = self.config.get("phase_definitions")
-            total_generation_time = sum(int(phase.get("phase_duration", 0)) for phase in phase_definitions)
-
-            if elapsed_time < total_generation_time:
-                # Still generating tasks - use configured base rate as default rate
-                arrival_rate = base_rate / 60.0  # Convert to tasks/sec
-            else:
-                # Past generation phase - no more tasks
-                arrival_rate = 0
+        arrival_rate = 0.0
+        worker_queue = self.config.get("worker_queue_name")
+        total_enqueued = self.worker_enqueue_total
+        self.arrival_history.append((current_time, total_enqueued))
+        if self._last_arrival_sample is not None:
+            last_time, last_total = self._last_arrival_sample
+            elapsed = current_time - last_time
+            delta_tasks = max(0.0, total_enqueued - last_total)
+            if elapsed > 0:
+                arrival_rate = delta_tasks / elapsed
+        self._last_arrival_sample = (current_time, total_enqueued)
 
         # QoS success rate (from recent tasks)
         if recent_tasks:

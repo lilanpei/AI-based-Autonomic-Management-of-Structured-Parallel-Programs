@@ -61,6 +61,8 @@ class SARSAHyperparams:
     epsilon: float = 0.2
     epsilon_min: float = 0.05
     epsilon_decay: float = 0.995
+    trace_lambda: float = 0.0
+    trace_threshold: float = 1e-5
 
 
 @dataclass
@@ -76,6 +78,7 @@ class SARSAAgent:
         self._q_table: DefaultDict[Tuple[int, ...], np.ndarray]
         self._q_table = defaultdict(lambda: np.zeros(self.action_size, dtype=np.float32))
         self._epsilon = self.hyperparams.epsilon
+        self.reset_traces()
 
     def _build_bins(self) -> None:
         """Pre-compute bin edges for each observation dimension."""
@@ -114,6 +117,29 @@ class SARSAAgent:
                 indices.append(int(np.digitize(value, edges)))
         return tuple(indices)
 
+    def reset_traces(self) -> None:
+        """Clear eligibility traces (called at episode boundaries)."""
+        self._eligibility: DefaultDict[Tuple[int, ...], np.ndarray]
+        self._eligibility = defaultdict(lambda: np.zeros(self.action_size, dtype=np.float32))
+
+    def trace_statistics(self) -> Tuple[int, float, float]:
+        """Return (active_state_count, max_abs_entry, mean_abs_entry)."""
+        if not self._eligibility:
+            return 0, 0.0, 0.0
+
+        active_states = len(self._eligibility)
+        max_abs = 0.0
+        total_abs = 0.0
+        total_entries = 0
+        for trace in self._eligibility.values():
+            abs_trace = np.abs(trace)
+            max_abs = max(max_abs, float(abs_trace.max(initial=0.0)))
+            total_abs += float(abs_trace.sum())
+            total_entries += trace.size
+
+        mean_abs = total_abs / total_entries if total_entries else 0.0
+        return active_states, max_abs, mean_abs
+
     def select_action(self, state: Tuple[int, ...]) -> int:
         """Return an action index using epsilon-greedy policy."""
         if np.random.random() < self._epsilon:
@@ -138,11 +164,33 @@ class SARSAAgent:
         next_state: Tuple[int, ...],
         next_action: int,
     ) -> None:
-        """Apply the SARSA update rule."""
+        """Apply the SARSA update rule with optional eligibility traces."""
         q_sa = self._q_table[state][action]
         q_next = self._q_table[next_state][next_action]
-        td_target = reward + self.hyperparams.gamma * q_next
-        self._q_table[state][action] += self.hyperparams.alpha * (td_target - q_sa)
+        td_error = reward + self.hyperparams.gamma * q_next - q_sa
+
+        lam = self.hyperparams.trace_lambda
+        if lam <= 0.0:
+            self._q_table[state][action] += self.hyperparams.alpha * td_error
+            return
+
+        # Accumulating eligibility traces (SARSA(λ)).
+        eligibility = self._eligibility[state]
+        eligibility[action] += 1.0
+
+        alpha = self.hyperparams.alpha
+        decay = self.hyperparams.gamma * lam
+        threshold = self.hyperparams.trace_threshold
+
+        for visited_state, trace in list(self._eligibility.items()):
+            self._q_table[visited_state] += alpha * td_error * trace
+
+            # Decay traces in place and prune negligible entries to control size.
+            trace *= decay
+            if np.max(np.abs(trace)) < threshold:
+                del self._eligibility[visited_state]
+            else:
+                self._eligibility[visited_state] = trace
 
     def decay_epsilon(self) -> None:
         self._epsilon = max(self.hyperparams.epsilon_min, self._epsilon * self.hyperparams.epsilon_decay)

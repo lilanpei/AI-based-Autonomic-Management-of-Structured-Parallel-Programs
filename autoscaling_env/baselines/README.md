@@ -13,16 +13,19 @@ This directory contains **reactive baseline policies** for autoscaling compariso
 
 ## 🎯 Baseline Policies
 
-### **1. ReactiveAverage**
+### **1. ReactiveAverage / ReactiveMaximum** – Horizon-based heuristics that track mirrored enqueue totals to estimate busy workers.
 
 **Strategy**: Horizon-based scaling using average processing time
 
 **Formula**:
 ```
-tasks_per_worker = max(horizon_seconds / avg_time, 1)
-workers_for_queue = worker_queue / tasks_per_worker
-workers_for_arrivals = arrival_rate * avg_time
-optimal_workers = (workers_for_queue + workers_for_arrivals) * safety_factor
+tasks_per_worker    = max(horizon_seconds / avg_time, 1)
+workers_for_queue   = worker_queue / tasks_per_worker
+workers_for_arrival = arrival_rate * avg_time
+active_tasks        = mirror_counter - worker_queue - result_queue - output_queue
+busy_workers        = min(workers, max(0, active_tasks - collector_adjustment))
+optimal_workers     = (workers_for_queue + workers_for_arrival) * safety_factor
+delta               = optimal_workers - busy_workers
 ```
 
 **Defaults**:
@@ -42,11 +45,14 @@ optimal_workers = (workers_for_queue + workers_for_arrivals) * safety_factor
 
 **Formula**:
 ```
-service_time = max(max_time, avg_time, 0.1)
-tasks_per_worker = max(horizon_seconds / service_time, 1)
-workers_for_queue = worker_queue / tasks_per_worker
-workers_for_arrivals = arrival_rate * service_time
-optimal_workers = (workers_for_queue + workers_for_arrivals) * safety_factor
+service_time        = max(max_time, avg_time, 0.1)
+tasks_per_worker    = max(horizon_seconds / service_time, 1)
+workers_for_queue   = worker_queue / tasks_per_worker
+workers_for_arrival = arrival_rate * service_time
+active_tasks        = mirror_counter - worker_queue - result_queue - output_queue
+busy_workers        = min(workers, max(0, active_tasks - collector_adjustment))
+optimal_workers     = (workers_for_queue + workers_for_arrival) * safety_factor
+delta               = optimal_workers - busy_workers
 ```
 
 **Defaults**:
@@ -67,7 +73,8 @@ optimal_workers = (workers_for_queue + workers_for_arrivals) * safety_factor
 Both policies calculate optimal workers based on:
 - Current worker queue length
 - Processing time (average or maximum)
-- Simple formula: `workers = (queue / time) + (arrival_rate × time)`
+- Mirrored enqueue counter (`worker_queue:enqueued_total`) to infer active tasks
+- Simple formula: `workers = (queue / time) + (arrival_rate × time)` adjusted by busy-worker estimates
 
 ### **Idle Handling**
 
@@ -147,13 +154,12 @@ Policies react to current metrics, don't predict future load:
 
 ## 🔗 Integration
 
-Baseline policies use the same interface as RL agents:
+Baseline policies expose lightweight lifecycle hooks so they can share mirrored telemetry with the environment:
 
-- **Observation**: `[queue_length, workers, avg_time, arrival_rate, qos_rate]`
-- **Action**: `{0: -2, 1: -1, 2: 0, 3: +1, 4: +2}`
-- **Environment**: `OpenFaaSAutoscalingEnv`
+- `reset()` clears mirrored counters at episode boundaries.
+- `update_from_info(info)` ingests `info['enqueued_total']` each step to keep busy-worker estimates in sync.
 
-This allows fair comparison between baselines and RL agents.
+They otherwise follow the same observation/action conventions as RL agents, enabling fair comparisons.
 
 ---
 

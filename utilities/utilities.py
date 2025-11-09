@@ -166,10 +166,17 @@ def clear_queues(redis_client=None, queue_names=None):
         ]
 
     redis_client = redis_client or get_redis_client_with_retry()
+    worker_queue_name = configuration.get("worker_queue_name")
+
     for name in queue_names:
         try:
             count = redis_client.delete(name)
             print(f"[INFO] Cleared Redis Queue '{name}' ({count} items removed).")
+            if name == worker_queue_name:
+                counter_key = f"{worker_queue_name}:enqueued_total"
+                counter_removed = redis_client.delete(counter_key)
+                if counter_removed:
+                    print(f"[INFO] Cleared worker enqueue counter '{counter_key}'.")
         except redis.exceptions.ConnectionError as e:
             print(f"[ERROR] Redis connection failed: {e}", file=sys.stderr)
 

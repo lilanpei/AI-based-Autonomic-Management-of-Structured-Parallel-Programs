@@ -81,6 +81,8 @@ def test_single_agent(agent_name, agent, env, num_steps=20, seed: int | None = N
         random.seed(seed)
 
     state = env.reset(seed=seed)
+    if hasattr(agent, "reset"):
+        agent.reset()
 
     print(f"✓ Initial state: {state}")
 
@@ -104,6 +106,8 @@ def test_single_agent(agent_name, agent, env, num_steps=20, seed: int | None = N
 
         # Execute action
         next_state, reward, done, info = env.step(action)
+        if hasattr(agent, "update_from_info"):
+            agent.update_from_info(info)
 
         # Track statistics
         rewards.append(reward)

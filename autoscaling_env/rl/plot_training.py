@@ -8,7 +8,12 @@ import json
 from typing import Any
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import numpy as np
+try:
+    from scipy.ndimage import uniform_filter1d
+except ImportError:  # pragma: no cover - fallback when SciPy missing
+    uniform_filter1d = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,12 +75,34 @@ def _normalize_episode(payload: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Episode {episode_number} has invalid epsilon value: {epsilon_raw}") from exc
 
-    return {
+    optional_float_keys = (
+        "scale_up_count",
+        "scale_down_count",
+        "max_workers",
+        "noop_count",
+        "steps",
+        "processed_tasks",
+        "qos_violations",
+        "unfinished_tasks",
+        "final_qos",
+    )
+
+    result: dict[str, Any] = {
         "episode": episode_number,
         "total_reward": reward,
         "mean_qos": mean_qos,
         "epsilon": epsilon,
     }
+
+    for key in optional_float_keys:
+        if key not in payload or payload[key] is None:
+            continue
+        try:
+            result[key] = float(payload[key])
+        except (TypeError, ValueError):
+            continue
+
+    return result
 
 
 def _load_from_json(path: Path) -> list[dict[str, Any]]:
@@ -180,6 +207,19 @@ def _normalize_evaluation_entry(payload: dict[str, Any]) -> dict[str, Any]:
         raw = payload.get(key)
         entry[key] = float(raw) if raw is not None else 0.0
 
+    for optional_key in (
+        "mean_scaling_actions",
+        "std_scaling_actions",
+        "mean_max_workers",
+        "std_max_workers",
+    ):
+        raw = payload.get(optional_key)
+        if raw is not None:
+            try:
+                entry[optional_key] = float(raw)
+            except (TypeError, ValueError):
+                continue
+
     return entry
 
 
@@ -197,6 +237,347 @@ def load_evaluation(path: Path) -> list[dict[str, Any]]:
         raise ValueError("Evaluation metrics must be a list or object with 'checkpoints'")
 
     return [_normalize_evaluation_entry(entry) for entry in entries]
+
+
+def render_training_curves(
+    episodes: list[dict[str, Any]],
+    evaluation_entries: list[dict[str, Any]] | None = None,
+    output_path: Path | None = None,
+    title: str = "SARSA Training Curves",
+) -> Path:
+    if not episodes:
+        raise ValueError("No episode data provided for plotting")
+
+    evaluation_entries = evaluation_entries or []
+
+    episode_numbers = np.array([ep["episode"] for ep in episodes], dtype=float)
+    total_rewards = np.array([ep["total_reward"] for ep in episodes], dtype=float)
+    final_qos = np.array(
+        [
+            float(ep["final_qos"]) if "final_qos" in ep and ep["final_qos"] is not None else ep["mean_qos"]
+            for ep in episodes
+        ],
+        dtype=float,
+    )
+
+    def _smooth(values: np.ndarray, window: int) -> np.ndarray:
+        if values.size == 0 or window <= 1:
+            return values
+        if not np.all(np.isfinite(values)):
+            return values
+        window = min(window, values.size)
+
+        if uniform_filter1d is not None:
+            return uniform_filter1d(values, size=window, mode="nearest")
+
+        # Fallback: pad with edge values before convolution to mimic "nearest" handling.
+        pad = window // 2
+        padded = np.pad(values, pad, mode="edge")
+        kernel = np.ones(window, dtype=np.float64) / window
+        smoothed = np.convolve(padded, kernel, mode="valid")
+        # For even window sizes, "valid" leaves one extra sample; trim to original length.
+        if smoothed.size > values.size:
+            start = (smoothed.size - values.size) // 2
+            smoothed = smoothed[start:start + values.size]
+        return smoothed
+
+    def _auto_limits(
+        *series: np.ndarray,
+        margin_ratio: float = 0.1,
+        low_quantile: float = 0.02,
+        high_quantile: float = 0.98,
+        floor_zero: bool = False,
+        integer: bool = False,
+        min_span: float = 0.0,
+    ) -> tuple[float, float] | None:
+        data_segments = []
+        for arr in series:
+            if arr is None:
+                continue
+            flat = np.asarray(arr, dtype=float).ravel()
+            if flat.size:
+                data_segments.append(flat[np.isfinite(flat)])
+        if not data_segments:
+            return None
+        filtered_segments = [seg for seg in data_segments if seg.size]
+        if not filtered_segments:
+            return None
+        data = np.concatenate(filtered_segments)
+        if data.size == 0:
+            return None
+        lo = np.quantile(data, low_quantile)
+        hi = np.quantile(data, high_quantile)
+        if np.isclose(lo, hi):
+            span = max(min_span, max(1.0, abs(lo)) * margin_ratio * 2)
+        else:
+            span = hi - lo
+            if span < min_span:
+                span = min_span
+        margin = span * margin_ratio
+        lo_adj = lo - margin
+        hi_adj = hi + margin
+
+        if floor_zero:
+            lo_adj = max(0.0, lo_adj)
+
+        if integer:
+            lo_adj = float(np.floor(lo_adj))
+            hi_adj = float(np.ceil(hi_adj))
+            if lo_adj == hi_adj:
+                hi_adj = lo_adj + 1.0
+
+        return lo_adj, hi_adj
+
+    smooth_window = 0
+    if len(episodes) >= 3:
+        smooth_window = min(15, max(3, len(episodes) // 10 or 3))
+
+    rewards_smooth = _smooth(total_rewards, smooth_window) if smooth_window else total_rewards
+    qos_smooth = _smooth(final_qos, smooth_window) if smooth_window else final_qos
+
+    max_workers = np.array([float(ep.get("max_workers", np.nan)) for ep in episodes], dtype=float)
+    scale_up_counts = np.array([float(ep.get("scale_up_count", np.nan)) for ep in episodes], dtype=float)
+    scale_down_counts = np.array([float(ep.get("scale_down_count", np.nan)) for ep in episodes], dtype=float)
+    scaling_events = scale_up_counts + scale_down_counts
+    scaling_smooth = _smooth(scaling_events, smooth_window) if smooth_window else scaling_events
+    workers_smooth = _smooth(max_workers, smooth_window) if smooth_window else max_workers
+
+    fig, (ax_reward, ax_qos, ax_workers, ax_scaling) = plt.subplots(
+        4,
+        1,
+        sharex=True,
+        figsize=(12, 14),
+        constrained_layout=False,
+    )
+    fig.suptitle(title)
+
+    # Reward subplot
+    ax_reward.set_ylabel("Total Reward", color="tab:blue")
+    ax_reward.plot(
+        episode_numbers,
+        total_rewards,
+        color="tab:blue",
+        alpha=0.35,
+        linewidth=1,
+        label="Total Reward (raw)",
+    )
+    ax_reward.plot(
+        episode_numbers,
+        rewards_smooth,
+        color="tab:blue",
+        linewidth=2,
+        label="Total Reward (smoothed)",
+    )
+    ax_reward.tick_params(axis="y", labelcolor="tab:blue")
+    ax_reward.grid(True, alpha=0.3)
+
+    # QoS subplot
+    ax_qos.set_ylabel("Final QoS", color="tab:green")
+    ax_qos.plot(
+        episode_numbers,
+        final_qos,
+        color="tab:green",
+        linestyle="--",
+        alpha=0.35,
+        linewidth=1,
+        label="Final QoS (raw)",
+    )
+    ax_qos.plot(
+        episode_numbers,
+        qos_smooth,
+        color="tab:green",
+        linestyle="--",
+        linewidth=2,
+        label="Final QoS (smoothed)",
+    )
+    ax_qos.tick_params(axis="y", labelcolor="tab:green")
+    ax_qos.grid(True, alpha=0.3)
+
+    # Max workers subplot
+    ax_workers.set_ylabel("Max Workers")
+    workers_mask = np.isfinite(max_workers)
+    if np.any(workers_mask):
+        ax_workers.plot(
+            episode_numbers[workers_mask],
+            max_workers[workers_mask],
+            color="tab:olive",
+            linewidth=1.5,
+            alpha=0.35,
+            label="Max Workers (raw)",
+        )
+        if smooth_window:
+            smooth_workers_mask = np.isfinite(workers_smooth)
+            ax_workers.plot(
+                episode_numbers[smooth_workers_mask],
+                workers_smooth[smooth_workers_mask],
+                color="tab:olive",
+                linewidth=2.5,
+                label=f"Max Workers (moving avg {smooth_window})",
+            )
+    ax_workers.grid(True, alpha=0.3)
+
+    # Scaling actions subplot
+    ax_scaling.set_xlabel("Episode")
+    ax_scaling.set_ylabel("Scaling Actions")
+    total_mask = np.isfinite(scaling_events)
+
+    if np.any(total_mask):
+        ax_scaling.plot(
+            episode_numbers[total_mask],
+            scaling_events[total_mask],
+            color="tab:red",
+            linewidth=1.5,
+            alpha=0.35,
+            label="Scaling Actions (raw)",
+        )
+        if smooth_window:
+            smooth_mask = np.isfinite(scaling_smooth)
+            ax_scaling.plot(
+                episode_numbers[smooth_mask],
+                scaling_smooth[smooth_mask],
+                color="tab:red",
+                linewidth=2.5,
+                label=f"Scaling Actions (moving avg {smooth_window})",
+            )
+    ax_scaling.grid(True, alpha=0.3)
+
+    axes = [ax_reward, ax_qos, ax_workers, ax_scaling]
+
+    eval_rewards = None
+    eval_qos = None
+    eval_scaling = None
+    eval_max_workers = None
+    if evaluation_entries:
+        eval_episodes = np.array([entry["episode"] for entry in evaluation_entries], dtype=float)
+        eval_rewards = np.array([entry["mean_total_reward"] for entry in evaluation_entries], dtype=float)
+        eval_rewards_std = np.array([entry.get("std_total_reward", 0.0) for entry in evaluation_entries], dtype=float)
+        eval_qos = np.array([entry["mean_final_qos"] for entry in evaluation_entries], dtype=float)
+        eval_qos_std = np.array([entry.get("std_final_qos", 0.0) for entry in evaluation_entries], dtype=float)
+        eval_scaling = np.array(
+            [entry.get("mean_scaling_actions", np.nan) for entry in evaluation_entries], dtype=float
+        )
+        eval_scaling_std = np.array(
+            [entry.get("std_scaling_actions", 0.0) for entry in evaluation_entries], dtype=float
+        )
+        eval_max_workers = np.array(
+            [entry.get("mean_max_workers", np.nan) for entry in evaluation_entries], dtype=float
+        )
+        eval_max_workers_std = np.array(
+            [entry.get("std_max_workers", 0.0) for entry in evaluation_entries], dtype=float
+        )
+
+        ax_reward.plot(
+            eval_episodes,
+            eval_rewards,
+            color="tab:purple",
+            marker="o",
+            linewidth=1.5,
+            label="Evaluation Reward (mean)",
+        )
+        if np.any(eval_rewards_std > 0):
+            ax_reward.fill_between(
+                eval_episodes,
+                eval_rewards - eval_rewards_std,
+                eval_rewards + eval_rewards_std,
+                color="tab:purple",
+                alpha=0.15,
+            )
+
+        ax_qos.plot(
+            eval_episodes,
+            eval_qos,
+            color="tab:orange",
+            marker="s",
+            linewidth=1.5,
+            label="Evaluation QoS (mean)",
+        )
+        if np.any(eval_qos_std > 0):
+            ax_qos.fill_between(
+                eval_episodes,
+                eval_qos - eval_qos_std,
+                eval_qos + eval_qos_std,
+                color="tab:orange",
+                alpha=0.15,
+            )
+
+        if np.isfinite(eval_max_workers).any():
+            ax_workers.plot(
+                eval_episodes,
+                eval_max_workers,
+                color="tab:olive",
+                marker="^",
+                linewidth=1.5,
+                label="Evaluation Max Workers (mean)",
+            )
+            if np.any(eval_max_workers_std > 0):
+                ax_workers.fill_between(
+                    eval_episodes,
+                    eval_max_workers - eval_max_workers_std,
+                    eval_max_workers + eval_max_workers_std,
+                    color="tab:olive",
+                    alpha=0.15,
+                )
+
+        if np.isfinite(eval_scaling).any():
+            ax_scaling.plot(
+                eval_episodes,
+                eval_scaling,
+                color="tab:red",
+                marker="d",
+                linewidth=1.5,
+                label="Evaluation Scaling Actions (mean)",
+            )
+            if np.any(eval_scaling_std > 0):
+                ax_scaling.fill_between(
+                    eval_episodes,
+                    eval_scaling - eval_scaling_std,
+                    eval_scaling + eval_scaling_std,
+                    color="tab:red",
+                    alpha=0.15,
+                )
+
+    if ax_reward.get_legend_handles_labels()[0]:
+        ax_reward.legend(loc="best", frameon=False)
+    if ax_qos.get_legend_handles_labels()[0]:
+        ax_qos.legend(loc="best", frameon=False)
+    if ax_workers.get_legend_handles_labels()[0]:
+        ax_workers.legend(loc="best", frameon=False)
+    if ax_scaling.get_legend_handles_labels()[0]:
+        ax_scaling.legend(loc="best", frameon=False)
+
+    ax_reward.set_ylim(-200.0, 200.0)
+
+    qos_limits = _auto_limits(
+        final_qos,
+        qos_smooth,
+        eval_qos,
+        margin_ratio=0.05,
+        low_quantile=0.02,
+        high_quantile=0.98,
+        min_span=0.05,
+    )
+    if qos_limits is not None:
+        lower = max(0.6, qos_limits[0])
+        upper = max(1.1, qos_limits[1])
+        ax_qos.set_ylim(lower, upper)
+    ax_qos.yaxis.set_major_locator(MaxNLocator(nbins=6, prune="both"))
+
+    ax_workers.set_ylim(12.0, 32.0)
+    ax_workers.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=6))
+
+    ax_scaling.set_ylim(12.0, 32.0)
+    ax_scaling.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=6))
+
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+
+    if output_path is None:
+        raise ValueError("output_path must be provided when rendering plots programmatically")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+    return output_path
 
 
 def main() -> None:
@@ -226,110 +607,13 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 print(f"[WARN] Unable to load evaluation metrics from {eval_path}: {exc}")
 
-    episode_numbers = np.array([ep["episode"] for ep in episodes])
-    total_rewards = np.array([ep["total_reward"] for ep in episodes])
-    mean_qos = np.array([ep["mean_qos"] for ep in episodes])
-    epsilon_values = [ep.get("epsilon") for ep in episodes]
-    has_epsilon = all(value is not None for value in epsilon_values)
-    epsilons = np.array(epsilon_values, dtype=float) if has_epsilon else None
-
-    def _smooth(values: np.ndarray, window: int) -> np.ndarray:
-        if values.size == 0 or window <= 1:
-            return values
-        window = min(window, values.size)
-        kernel = np.ones(window, dtype=np.float64) / window
-        return np.convolve(values, kernel, mode="same")
-
-    smooth_window = 0
-    if len(episodes) >= 3:
-        smooth_window = min(15, max(3, len(episodes) // 10 or 3))
-
-    rewards_smooth = _smooth(total_rewards, smooth_window) if smooth_window else total_rewards
-    qos_smooth = _smooth(mean_qos, smooth_window) if smooth_window else mean_qos
-
-    fig, ax1 = plt.subplots(figsize=(12, 6))
-    ax1.set_title("SARSA Training Curves")
-    ax1.set_xlabel("Episode")
-    ax1.set_ylabel("Total Reward", color="tab:blue")
-    ax1.plot(episode_numbers, total_rewards, color="tab:blue", alpha=0.35, linewidth=1, label="Total Reward (raw)")
-    ax1.plot(episode_numbers, rewards_smooth, color="tab:blue", linewidth=2, label="Total Reward (smoothed)")
-    ax1.tick_params(axis="y", labelcolor="tab:blue")
-    ax1.grid(True, alpha=0.3)
-
-    ax2 = ax1.twinx()
-    ax2.set_ylabel("QoS Rate", color="tab:green")
-    ax2.plot(episode_numbers, mean_qos, color="tab:green", linestyle="--", alpha=0.35, linewidth=1, label="Mean QoS (raw)")
-    ax2.plot(episode_numbers, qos_smooth, color="tab:green", linestyle="--", linewidth=2, label="Mean QoS (smoothed)")
-    ax2.tick_params(axis="y", labelcolor="tab:green")
-
-    if evaluation_entries:
-        eval_episodes = np.array([entry["episode"] for entry in evaluation_entries], dtype=float)
-        eval_rewards = np.array([entry["mean_total_reward"] for entry in evaluation_entries], dtype=float)
-        eval_rewards_std = np.array([entry.get("std_total_reward", 0.0) for entry in evaluation_entries], dtype=float)
-        eval_qos = np.array([entry["mean_final_qos"] for entry in evaluation_entries], dtype=float)
-        eval_qos_std = np.array([entry.get("std_final_qos", 0.0) for entry in evaluation_entries], dtype=float)
-
-        ax1.plot(
-            eval_episodes,
-            eval_rewards,
-            color="tab:purple",
-            marker="o",
-            linewidth=1.5,
-            label="Evaluation Reward (mean)",
-        )
-        if np.any(eval_rewards_std > 0):
-            ax1.fill_between(
-                eval_episodes,
-                eval_rewards - eval_rewards_std,
-                eval_rewards + eval_rewards_std,
-                color="tab:purple",
-                alpha=0.15,
-            )
-
-        ax2.plot(
-            eval_episodes,
-            eval_qos,
-            color="tab:orange",
-            marker="s",
-            linewidth=1.5,
-            label="Evaluation QoS (mean)",
-        )
-        if np.any(eval_qos_std > 0):
-            ax2.fill_between(
-                eval_episodes,
-                eval_qos - eval_qos_std,
-                eval_qos + eval_qos_std,
-                color="tab:orange",
-                alpha=0.15,
-            )
-
-    axes = [ax1, ax2]
-    if epsilons is not None:
-        ax3 = ax1.twinx()
-        ax3.spines["right"].set_position(("outward", 60))
-        ax3.set_ylabel("Epsilon", color="tab:red")
-        ax3.plot(episode_numbers, epsilons, color="tab:red", linestyle=":", label="Epsilon")
-        ax3.tick_params(axis="y", labelcolor="tab:red")
-        axes.append(ax3)
-
-    handles, labels = [], []
-    for axis in axes:
-        h, l = axis.get_legend_handles_labels()
-        handles.extend(h)
-        labels.extend(l)
-    if handles:
-        ax1.legend(handles, labels, loc="upper left", frameon=False)
-
-    fig.tight_layout()
-
     if args.output:
         output_path = args.output
     else:
         output_path = args.metrics.parent / "plots" / "training_curves.png"
         output_path.parent.mkdir(exist_ok=True)
 
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
+    render_training_curves(episodes, evaluation_entries, output_path)
     print(f"Plot saved to {output_path}")
 
 
