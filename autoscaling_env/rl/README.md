@@ -14,7 +14,7 @@ produced by `utilities/configuration.yml`.
 | `train_sarsa.py` | Command-line training loop with logging, checkpointing, eligibility trace controls, and metric export. |
 | `test_sarsa.py` | Deterministic policy roll-out with run-directory logging and per-episode plotting (stdout or logger-backed). |
 | `dqn_agent.py` | Lightweight neural DQN (two hidden layers) with replay buffer, target network, and observation normalisation. |
-| `train_dqn.py` | DQN training loop mirroring SARSA's CLI, logging tables, checkpointing cadence, and evaluation hooks. |
+| `train_dqn.py` | DQN training loop mirroring SARSA's CLI (Polyak target updates, L2 loss, matching episode metrics). |
 | `test_dqn.py` | Greedy evaluation tool with the same per-step reporting/plotting pipeline as the SARSA tester. |
 | `plot_training.py` | Utility to regenerate training plots from stored metrics or in-memory episode lists. |
 | `utils.py` | Shared helpers (discretisation factory, logging, run directory management, JSON export). |
@@ -108,6 +108,7 @@ python -m autoscaling_env.rl.train_dqn \
   --replay-capacity 50000 \
   --batch-size 64 \
   --target-update 500 \
+  --target-tau 0.01 \
   --epsilon-start 0.4 --epsilon-end 0.05 --epsilon-decay 0.995 \
   --eval-episodes 3
 ```
@@ -116,11 +117,13 @@ Highlights:
 
 - **Architecture**: Two hidden layers (configurable via `--hidden-layers`) optimised for fast inference during live runs.
 - **Replay buffer**: Uniform sampling with warmup and optional gradient clipping.
-- **Double DQN**: Periodic target network sync (`--target-update`).
+- **Double DQN**: Polyak-style target updates blending weights every `--target-update` steps (`--target-tau` controls the mix).
 - **Normalization**: Observations scaled via environment bounds for training and inference parity.
-- **Logging parity**: Emits the same per-step tables as SARSA (`train_dqn.py`/`test_dqn.py`).
+- **Episode metrics**: Matches SARSA logging (`mean/max workers`, processed tasks, QoS violations, unfinished tasks, scaling/no-op counts, mean loss).
 
 Episode artefacts mirror SARSA but live under `runs/dqn_run_<timestamp>/` with `.pt` checkpoints.
+
+> **Tip:** Adjust `--target-tau` for smoother or sharper target tracking (1.0 restores the legacy hard-copy sync).
 
 ## Evaluating Saved Models
 
@@ -143,21 +146,22 @@ python -m autoscaling_env.rl.test_dqn \
 
 ```
 
-Both scripts execute greedy roll-outs (SARSA via Q-table lookup, DQN via the neural policy) and print matching per-episode summaries. JSON reports are written via `--output` (default `runs/eval_results.json` for SARSA, `runs/dqn_eval_results.json` for DQN).
+Both scripts execute greedy roll-outs (SARSA via Q-table lookup, DQN via the neural policy) and print matching per-episode summaries (`total_reward`, `mean_reward`, `mean_qos`, `final_qos`, `mean/max workers`, scaling/no-op counts). JSON reports are written via `--output` (default `runs/eval_results.json` for SARSA, `runs/dqn_eval_results.json` for DQN).
 
 ### Compare Against Reactive Baselines on a Single Episode
 
 ```bash
 python -m autoscaling_env.compare_policies \
   --model autoscaling_env/rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
+  --dqn-model autoscaling_env/rl/runs/dqn_run_<timestamp>/models/dqn_final.pt \
   --max-steps 30 \
   --initial-workers 12 \
-  --agents agent reactiveaverage reactivemaximum
+  --agents sarsa dqn reactiveaverage reactivemaximum
 ```
 
 Creates a timestamped directory under `autoscaling_env/runs/comparison/` with
-per-step logs, aggregated mean/std summaries, and a shared plot for the selected
-policies. Once `aggregated_results.json` exists for a run you can reproduce
+per-step logs, aggregated summaries (mean ± std reward/QoS, worker metrics, scaling/no-op counts),
+and shared plots for the selected policies. Once `aggregated_results.json` exists for a run you can reproduce
 plots or focus on a subset of policies without rerunning simulations:
 
 ```bash
@@ -166,6 +170,9 @@ python -m autoscaling_env.compare_policies \
   --input-dir autoscaling_env/runs/comparison/compare_<timestamp> \
   --agents reactiveaverage
 ```
+
+> **Baseline cache:** reuse previously simulated reactive policies while re-evaluating SARSA/DQN by passing
+> `--baseline-cache autoscaling_env/runs/comparison/compare_<timestamp>`.
 
 ## Eligibility Traces
 

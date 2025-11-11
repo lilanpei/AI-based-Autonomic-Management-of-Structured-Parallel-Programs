@@ -43,20 +43,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume-model", type=Path, default=None, help="Path to a previously trained DQN checkpoint (.pt) to resume")
 
     # Hyperparameters
-    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
-    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Adam learning rate")
-    parser.add_argument("--epsilon-start", type=float, default=0.4, help="Initial epsilon for exploration")
+    parser.add_argument("--gamma", type=float, default=0.988, help="Discount factor")
+    parser.add_argument("--learning-rate", type=float, default=2e-4, help="Adam learning rate")
+    parser.add_argument("--epsilon-start", type=float, default=0.35, help="Initial epsilon for exploration")
     parser.add_argument("--epsilon-end", type=float, default=0.05, help="Minimum epsilon after decay")
-    parser.add_argument("--epsilon-decay", type=float, default=0.995, help="Episode-wise epsilon decay factor")
+    parser.add_argument("--epsilon-decay", type=float, default=0.9975, help="Episode-wise epsilon decay factor")
     parser.add_argument("--batch-size", type=int, default=64, help="Mini-batch size for SGD updates")
-    parser.add_argument("--replay-capacity", type=int, default=50_000, help="Replay buffer capacity")
-    parser.add_argument("--target-update", type=int, default=500, help="Steps between target network updates")
-    parser.add_argument("--warmup-steps", type=int, default=1_000, help="Steps to collect before training begins")
+    parser.add_argument("--replay-capacity", type=int, default=75_000, help="Replay buffer capacity")
+    parser.add_argument("--target-update", type=int, default=600, help="Steps between target network updates")
+    parser.add_argument(
+        "--target-tau",
+        type=float,
+        default=0.01,
+        help="Soft-update interpolation factor (1.0 falls back to hard updates)",
+    )
+    parser.add_argument("--warmup-steps", type=int, default=2_000, help="Steps to collect before training begins")
     parser.add_argument("--max-grad-norm", type=float, default=5.0, help="Gradient clipping norm (0 disables)")
     parser.add_argument("--hidden-layers", type=int, nargs="+", default=[128, 64], help="Hidden layer sizes for the Q-network")
 
     parser.add_argument("--checkpoint-every", type=int, default=10, help="Save intermediate checkpoints every N episodes (0 to disable)")
-    parser.add_argument("--eval-episodes", type=int, default=3, help="Evaluation episodes to run per checkpoint (0 to disable)")
+    parser.add_argument("--eval-episodes", type=int, default=5, help="Evaluation episodes to run per checkpoint (0 to disable)")
 
     parser.add_argument("--initialize-workflow", action="store_true", help="Deploy/initialize the OpenFaaS workflow before training begins")
     parser.add_argument("--phase-shuffle", action="store_true", help="Randomize phase order each training episode (training only)")
@@ -78,6 +84,7 @@ def _build_hyperparams(args: argparse.Namespace) -> DQNHyperparams:
         batch_size=args.batch_size,
         replay_capacity=args.replay_capacity,
         target_update_interval=args.target_update,
+        target_tau=args.target_tau,
         warmup_steps=args.warmup_steps,
         max_grad_norm=args.max_grad_norm if args.max_grad_norm > 0 else None,
         hidden_layers=tuple(args.hidden_layers),
@@ -338,6 +345,7 @@ def main() -> None:
         scale_down_count = 0
         noop_count = 0
         max_workers_seen = float(observation[4]) if observation.size > 4 else float(env.initial_workers)
+        worker_counts: List[float] = []
         last_qos_violations = 0
         last_unfinished_tasks = 0
         losses: List[float] = []
@@ -366,6 +374,7 @@ def main() -> None:
                 else:
                     noop_count += 1
             max_workers_seen = max(max_workers_seen, float(info.get("workers", next_observation[4])))
+            worker_counts.append(float(info.get("workers", next_observation[4])))
             last_qos_violations = int(info.get("qos_violations", last_qos_violations))
             last_unfinished_tasks = int(info.get("unfinished_tasks", last_unfinished_tasks))
 
@@ -434,6 +443,7 @@ def main() -> None:
             "scale_down_count": scale_down_count,
             "noop_count": noop_count,
             "max_workers": max_workers_seen,
+            "mean_workers": float(np.mean(worker_counts)) if worker_counts else max_workers_seen,
             "qos_violations": last_qos_violations,
             "unfinished_tasks": last_unfinished_tasks,
             "mean_loss": float(np.mean(losses)) if losses else 0.0,
@@ -441,20 +451,25 @@ def main() -> None:
         metrics.append(episode_metrics)
 
         logger.info(
-            "Episode %d/%d | steps=%d reward=%.2f mean_qos=%.3f final_qos=%.3f loss=%.4f"
-            " epsilon=%.3f scale_up=%d scale_down=%d noop=%d max_workers=%.0f",
+            "Episode %d/%d | steps=%d reward=%.2f mean_qos=%.3f final_qos=%.3f tasks=%d"
+            " loss=%.4f epsilon=%.3f scale_up=%d scale_down=%d noop=%d mean_workers=%.2f max_workers=%.0f"
+            " qos_violations=%d unfinished=%d",
             episode,
             args.episodes,
             step_count,
             episode_metrics["total_reward"],
             episode_metrics["mean_qos"],
             episode_metrics["final_qos"],
+            episode_metrics["processed_tasks"],
             episode_metrics["mean_loss"],
             episode_metrics["epsilon"],
             episode_metrics["scale_up_count"],
             episode_metrics["scale_down_count"],
             episode_metrics["noop_count"],
+            episode_metrics["mean_workers"],
             episode_metrics["max_workers"],
+            episode_metrics["qos_violations"],
+            episode_metrics["unfinished_tasks"],
         )
 
         if args.checkpoint_every and episode % args.checkpoint_every == 0:

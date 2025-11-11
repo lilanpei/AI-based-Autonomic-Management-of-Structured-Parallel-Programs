@@ -1,0 +1,96 @@
+import argparse
+import json
+from pathlib import Path
+import matplotlib.pyplot as plt
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--json", type=str, default=None)
+    parser.add_argument("--max-runs", type=int, default=10)
+    parser.add_argument("--agents", type=str, default=None)
+    parser.add_argument("--save", type=str, default="qos_vs_workers_scatter.png")
+    args = parser.parse_args()
+
+    script_dir = Path(__file__).resolve().parent
+    default_json = script_dir / "runs/comparison/compare_20251113_101940/aggregated_results.json"
+    json_path = Path(args.json) if args.json else default_json
+
+    with open(json_path, "r") as f:
+        data = json.load(f)
+
+    present_agents = list(data.get("agents", {}).keys())
+
+    preferred = ["SARSA", "ReactiveAverage", "ReactiveMaximum"]
+    if args.agents:
+        selected = [a.strip() for a in args.agents.split(",") if a.strip()]
+    else:
+        selected = [a for a in preferred if a in present_agents]
+        if not selected:
+            selected = present_agents
+
+    colors = {"SARSA": "#1f77b4", "ReactiveAverage": "#ff7f0e", "ReactiveMaximum": "#2ca02c"}
+    markers = {"SARSA": "o", "ReactiveAverage": "s", "ReactiveMaximum": "^"}
+
+    plt.figure(figsize=(7, 5), dpi=140)
+
+    plotted = 0
+    for agent in selected:
+        records = data["agents"][agent].get("records", [])[: max(0, args.max_runs)]
+        xs, ys = [], []
+        for r in records:
+            s = r.get("summary", {})
+            if "mean_workers" in s and "final_qos_total" in s:
+                xs.append(s["mean_workers"])
+                ys.append(s["final_qos_total"])
+        if xs and ys:
+            plt.scatter(
+                xs,
+                ys,
+                s=70,
+                label=f"{agent} (n={len(xs)})",
+                c=colors.get(agent, "#444"),
+                marker=markers.get(agent, "o"),
+                alpha=0.9,
+                edgecolors="white",
+                linewidths=0.7,
+                zorder=3,
+            )
+            x_mean = sum(xs) / len(xs)
+            y_mean = sum(ys) / len(ys)
+            plt.scatter(
+                [x_mean],
+                [y_mean],
+                s=140,
+                label=f"{agent} mean",
+                c=colors.get(agent, "#444"),
+                marker="X",
+                alpha=0.95,
+                edgecolors="black",
+                linewidths=1.2,
+                zorder=4,
+            )
+            plotted += len(xs)
+
+    plt.xlabel("Mean Workers")
+    plt.ylabel("Final QoS")
+    plt.ylim(0.0, 1.1)
+    plt.title(f"QoS vs Workers ({args.max_runs} runs)")
+    plt.grid(True, linestyle="--", alpha=0.4, zorder=0)
+    if plotted:
+        plt.legend(frameon=True, loc="lower right")
+    plt.tight_layout()
+
+    if args.save:
+        out = Path(args.save)
+        if not out.suffix:
+            out = out.with_suffix(".png")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(out, bbox_inches="tight", dpi=180)
+        print(f"Saved to {out}")
+    else:
+        plt.show()
+
+
+if __name__ == "__main__":
+    main()

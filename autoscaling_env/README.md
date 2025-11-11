@@ -62,7 +62,8 @@ python train_sarsa.py --episodes 100 --max-steps 30 --step-duration 8 \
 
 # 3. Train lightweight DQN (120 episodes × 30 steps)
 python train_dqn.py --episodes 120 --max-steps 30 --step-duration 8 \
-    --initial-workers 12 --eval-episodes 3
+    --initial-workers 12 --eval-episodes 3 \
+    --target-tau 0.01
 
 # 4. Evaluate trained models
 python test_sarsa.py --model runs/sarsa_run_<timestamp>/models/sarsa_final.pkl --initial-workers 12
@@ -74,8 +75,8 @@ python compare_policies.py --model rl/runs/sarsa_run_<timestamp>/models/sarsa_fi
 ```
 
 Each trainer creates timestamped run directories (e.g., `sarsa_run_*`, `dqn_run_*`) with per-step logs,
-metrics, checkpoints, and plots. Evaluation scripts mirror the SARSA-style tabular reporting and per-episode
-figures. Outputs live under `autoscaling_env/runs/`.
+metrics (reward, QoS, **mean/max workers, processed tasks, QoS violations, unfinished tasks**), checkpoints,
+and plots. Evaluation scripts mirror the SARSA-style tabular reporting and per-episode figures. Outputs live under `autoscaling_env/runs/`.
 
 ---
 
@@ -130,13 +131,14 @@ Training artefacts include `training_metrics.json`, QoS/reward plots, `training_
 
 ## Comparisons & Plots
 
-`compare_policies.py` evaluates SARSA alongside reactive baselines, saving:
+`compare_policies.py` evaluates SARSA, optionally a DQN checkpoint, and the reactive baselines, saving:
 
 - Step-by-step logs per agent
-- Aggregated summaries (`aggregated_results.json`)
-- Box plots (`comparison_boxplots.png`)
+- Aggregated summaries (`aggregated_results.json`) with mean reward/QoS/worker metrics and scaling/no-op counts
+- Comparison plots (`comparison_plots.png`)
 
-Use `--plot-only --input-dir <run_dir>` to regenerate visualisations from saved results.
+Use `--plot-only --input-dir <run_dir>` to regenerate visualisations from saved results. To skip recomputing
+reactive baselines on subsequent runs, pass `--baseline-cache <existing_compare_dir>`.
 
 ---
 

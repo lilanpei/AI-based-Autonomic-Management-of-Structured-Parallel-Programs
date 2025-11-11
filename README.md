@@ -147,8 +147,10 @@ python train_dqn.py --episodes 120 --max-steps 30 --step-duration 8 --initial-wo
 ```
 
 The DQN trainer mirrors SARSA's reporting: timestamped `dqn_run_*` directories with
-per-step logs, checkpoints (`.pt`), `training_metrics.json`, optional
-`evaluation_metrics.json`, and plots.
+per-step logs (reward, QoS, **mean/max workers, processed tasks, QoS violations, unfinished tasks**),
+checkpoints (`.pt`), `training_metrics.json`, optional `evaluation_metrics.json`, and plots.
+
+> **Tip:** Tune the Polyak target smoothing with `--target-tau` (default `0.01`). Set `1.0` to fall back to the previous hard-copy target network.
 
 ### **5. Evaluate Trained Model**
 
@@ -161,24 +163,29 @@ python test_dqn.py --model runs/dqn_run_<timestamp>/models/dqn_final.pt --initia
 ```
 
 Both evaluation scripts now emit SARSA-style per-step tables, per-episode plots,
-and JSON summaries inside timestamped `*_eval_*` directories.
+and JSON summaries with the same aggregate metrics as the comparison tooling
+(`total_reward`, `mean_reward`, `mean_qos`, `final_qos`, `mean/max workers`, scaling/no-op counts).
 
 ---
 
-### **6. Plot Single-Episode Comparison (SARSA vs Baselines)**
+### **6. Plot Single-Episode Comparison (SARSA, DQN & Baselines)**
 
 ```bash
 cd autoscaling_env/rl
 python compare_policies.py \
   --model rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
+  --dqn-model rl/runs/dqn_run_<timestamp>/models/dqn_final.pt \
   --initial-workers 12 \
   --max-steps 40 \
-  --agents agent reactiveaverage reactivemaximum
+  --agents sarsa dqn reactiveaverage reactivemaximum
 ```
 
 Generates a shared-step comparison plot, aggregated statistics, and a log under
 `autoscaling_env/runs/comparison/compare_<timestamp>/`. Re-run the plot without
 new simulations using `--plot-only --input-dir <existing_run> [--agents ...]`.
+
+> **Re-use baselines:** pass `--baseline-cache <previous_compare_dir>` to reuse
+> cached ReactiveAverage / ReactiveMaximum results while re-evaluating SARSA or DQN.
 
 ---
 

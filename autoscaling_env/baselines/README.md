@@ -6,58 +6,63 @@ This directory contains **reactive baseline policies** for autoscaling compariso
 
 ## 📁 Files
 
-- **`reactive_baselines.py`**: Policy implementations (ReactiveAverage, ReactiveMaximum)
+- **`reactive_policies.py`**: Policy implementations (ReactiveAverage, ReactiveMaximum)
 - **`README.md`**: This documentation
 
 ---
 
 ## 🎯 Baseline Policies
 
-### **1. ReactiveAverage / ReactiveMaximum** – Horizon-based heuristics that track mirrored enqueue totals to estimate busy workers.
+### **1. ReactiveAverage** – FARM-inspired heuristic with average processing time
 
-**Strategy**: Horizon-based scaling using average processing time
+**Strategy**: Balance backlog clearance and anticipated arrivals during the control horizon using the analytical FARM skeleton.
 
 **Formula**:
 ```
-tasks_per_worker    = max(horizon_seconds / avg_time, 1)
-workers_for_queue   = worker_queue / tasks_per_worker
-workers_for_arrival = arrival_rate * avg_time
-active_tasks        = mirror_counter - worker_queue - result_queue - output_queue
-busy_workers        = min(workers, max(0, active_tasks - collector_adjustment))
-optimal_workers     = (workers_for_queue + workers_for_arrival) * safety_factor
-delta               = optimal_workers - busy_workers
+service_time         = max(avg_time, 0.1)
+horizon              = max(horizon_seconds, service_time, 1.0)
+workers_for_arrival  = arrival_rate * service_time
+workers_for_queue    = (worker_queue / horizon) * service_time
+active_tasks         = mirror_counter - worker_queue - result_queue - output_queue
+active_tasks_workers = min(workers, max(0, active_tasks - collector_adjustment))
+busy_workers         = (active_tasks_workers / horizon) * service_time * adjustment_factor
+optimal_workers      = (workers_for_queue + workers_for_arrival) * safety_factor
+delta                = optimal_workers - (workers - busy_workers)
 ```
 
 **Defaults**:
-- `horizon_seconds` = environment `step_duration` (override via `--horizon`/`set_horizon`)
+- `horizon_seconds` = 8.0 s (override via `--horizon`/`set_horizon`)
 - `safety_factor` = 1.0
+- `adjustment_factor` = 0.5 (down-weights mirrored busy capacity to leave buffer)
 
 **Behavior**:
-- Conservative scaling tuned to current control window
-- Smooth adjustments informed by backlog and expected arrivals
-- Good for stable workloads
+- Conservative scaling matched to average service time
+- Smooth adjustments informed by mirrored active-task telemetry
+- Good for stable workloads with gradual changes
 
 ---
 
 ### **2. ReactiveMaximum**
 
-**Strategy**: Horizon-based scaling using maximum processing time (worst case)
+**Strategy**: Same analytical FARM structure as ReactiveAverage but substitutes the worst-case service time for extra protection.
 
 **Formula**:
 ```
-service_time        = max(max_time, avg_time, 0.1)
-tasks_per_worker    = max(horizon_seconds / service_time, 1)
-workers_for_queue   = worker_queue / tasks_per_worker
-workers_for_arrival = arrival_rate * service_time
-active_tasks        = mirror_counter - worker_queue - result_queue - output_queue
-busy_workers        = min(workers, max(0, active_tasks - collector_adjustment))
-optimal_workers     = (workers_for_queue + workers_for_arrival) * safety_factor
-delta               = optimal_workers - busy_workers
+service_time         = max(max_time, avg_time, 0.1)
+horizon              = max(horizon_seconds, service_time, 1.0)
+workers_for_arrival  = arrival_rate * service_time
+workers_for_queue    = (worker_queue / horizon) * service_time
+active_tasks         = mirror_counter - worker_queue - result_queue - output_queue
+active_tasks_workers = min(workers, max(0, active_tasks - collector_adjustment))
+busy_workers         = (active_tasks_workers / horizon) * service_time * adjustment_factor
+optimal_workers      = (workers_for_queue + workers_for_arrival) * safety_factor
+delta                = optimal_workers - (workers - busy_workers)
 ```
 
 **Defaults**:
-- `horizon_seconds` = environment `step_duration`
+- `horizon_seconds` = 8.0 s
 - `safety_factor` = 1.0
+- `adjustment_factor` = 1.0 (uses full mirrored busy capacity to react quickly)
 
 **Behavior**:
 - Protective against QoS violations
@@ -110,12 +115,12 @@ python test_reactive_baselines.py --agent both --steps 30 --step-duration 8 --ho
 
 ## 📊 Evaluation Metrics
 
-Policies are evaluated on:
+Policies are evaluated on the same episode metrics emitted by SARSA/DQN comparisons:
 
-1. **Total Reward**: Cumulative reward over episode
-2. **QoS Rate**: Percentage of tasks meeting deadline
-3. **Average Workers**: Mean worker count (resource efficiency)
-4. **Scaling Actions**: Number of scaling operations (stability)
+1. **Total Reward**: Cumulative reward over the episode
+2. **Mean QoS Rate / Final QoS**: Percentage of tasks meeting deadline
+3. **Mean / Max Workers**: Resource usage
+4. **Scaling vs No-op Actions**: Measures policy aggressiveness and stability
 
 ---
 

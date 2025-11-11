@@ -357,7 +357,7 @@ def evaluate_episode(
     _log(f"Total Reward:       {total_reward:.2f}")
     _log(f"Mean Reward:        {mean_reward:.2f} ± {std_reward:.2f}")
     _log(f"Mean QoS Rate:      {mean_qos:.2%}")
-    _log(f"Final QoS:  {final_qos_total:.2%}")
+    _log(f"Final QoS (tasks):  {final_qos_total:.2%}")
     _log(f"Mean Workers:       {mean_workers:.1f}")
     _log(f"Max Workers:        {max_workers:.1f}")
     _log(f"Scaling Actions:    {scaling_actions}")

@@ -2,6 +2,7 @@
 """Compare a trained SARSA agent with reactive baselines on a single episode."""
 
 import argparse
+import copy
 import json
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -24,9 +25,11 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from autoscaling_env.openfaas_autoscaling_env import OpenFaaSAutoscalingEnv
+from autoscaling_env.rl.dqn_agent import DQNAgent
 from autoscaling_env.rl.sarsa_agent import SARSAAgent
 from autoscaling_env.rl.utils import build_discretization_config
-from autoscaling_env.rl.test_sarsa import evaluate_episode  # reuse existing helpers
+from autoscaling_env.rl.test_sarsa import evaluate_episode as evaluate_sarsa_episode
+from autoscaling_env.rl.test_dqn import evaluate_episode as evaluate_dqn_episode
 from autoscaling_env.baselines.reactive_policies import ReactiveAverage, ReactiveMaximum
 from utilities.utilities import get_utc_now
 
@@ -51,9 +54,13 @@ AGGREGATED_FILENAME = "aggregated_results.json"
 
 METRIC_LABELS = {
     "total_reward": "Total Reward",
+    "mean_reward": "Mean Reward",
     "final_qos_total": "Final QoS (tasks)",
-    "scaling_actions": "Scaling Actions",
+    "mean_qos": "Mean QoS Rate",
+    "mean_workers": "Mean Workers",
     "max_workers": "Max Workers",
+    "scaling_actions": "Scaling Actions",
+    "noop_actions": "No-op Actions",
 }
 
 AGENT_ALIAS_MAP = {
@@ -65,6 +72,8 @@ AGENT_ALIAS_MAP = {
     "reactivemaximum": "ReactiveMaximum",
     "reactivemax": "ReactiveMaximum",
     "reactivemaximumpolicy": "ReactiveMaximum",
+    "dqn": "DQN",
+    "dqnagent": "DQN",
 }
 
 
@@ -145,7 +154,7 @@ def print_agent_summaries(aggregated: Dict[str, Dict[str, object]], agent_order:
             metric = summary.get(key, {"mean": 0.0, "std": 0.0})
             mean_value = float(metric.get("mean", 0.0))
             std_value = float(metric.get("std", 0.0))
-            if key == "final_qos_total":
+            if key in {"final_qos_total", "mean_qos"}:
                 mean_str = f"{mean_value:.2%}"
                 std_str = f"{std_value:.2%}"
             else:
@@ -162,7 +171,7 @@ def run_sarsa_episode(
     total_episodes: int,
     seed: int | None,
 ) -> Dict[str, List[float]]:
-    return evaluate_episode(
+    return evaluate_sarsa_episode(
         env,
         agent,
         max_steps=max_steps,
@@ -390,9 +399,13 @@ def _compute_mean_std(values: List[float]) -> Dict[str, float]:
 def compute_agent_summary(records: List[Dict[str, List[float]]]) -> Dict[str, Dict[str, float]]:
     metrics = {
         "total_reward": [],
+        "mean_reward": [],
         "final_qos_total": [],
-        "scaling_actions": [],
+        "mean_qos": [],
+        "mean_workers": [],
         "max_workers": [],
+        "scaling_actions": [],
+        "noop_actions": [],
     }
 
     for record in records:
@@ -493,6 +506,12 @@ def main() -> None:
         type=Path,
         help="Path to trained SARSA model (.pkl). Required unless --plot-only is used.",
     )
+    parser.add_argument(
+        "--dqn-model",
+        type=Path,
+        default=None,
+        help="Optional trained DQN checkpoint (.pt) to include in the comparison",
+    )
     parser.add_argument("--max-steps", type=int, default=30, help="Max steps per episode")
     parser.add_argument("--step-duration", type=int, default=8, help="Seconds per environment step")
     parser.add_argument("--initial-workers", type=int, default=12, help="Initial workers (match training/eval setup)")
@@ -512,6 +531,14 @@ def main() -> None:
         type=Path,
         default=None,
         help="Existing comparison directory containing comparison.log and aggregated results (used with --plot-only)",
+    )
+    parser.add_argument(
+        "--baseline-cache",
+        type=Path,
+        default=None,
+        help=(
+            "Reuse reactive baseline results from an existing comparison directory or aggregated results file"
+        ),
     )
     parser.add_argument(
         "--agents",
@@ -629,13 +656,80 @@ def main() -> None:
             finally:
                 env.close()
 
+            requested_dqn = any(
+                AGENT_ALIAS_MAP.get(_normalize_agent_token(name), name) == "DQN"
+                for name in args.agents
+            )
+
+            if requested_dqn and args.dqn_model is None:
+                raise ValueError("--dqn-model must be supplied when requesting DQN comparisons")
+
             # Evaluate reactive baselines
             baseline_configs = [
                 ("ReactiveAverage", ReactiveAverage, "Reactive Average"),
                 ("ReactiveMaximum", ReactiveMaximum, "Reactive Maximum"),
             ]
+            baseline_cache: Dict[str, Dict[str, object]] = {}
+            baseline_cache_source: Path | None = None
+            if args.baseline_cache is not None:
+                cache_candidate = args.baseline_cache
+                cache_path = (
+                    cache_candidate / AGGREGATED_FILENAME
+                    if cache_candidate.is_dir()
+                    else cache_candidate
+                )
+                if not cache_path.exists():
+                    print(
+                        f"[WARN] Baseline cache not found at {cache_path}. Reactive baselines will be re-evaluated."
+                    )
+                else:
+                    try:
+                        cache_data = load_aggregated_results(cache_path)
+                    except Exception as exc:  # noqa: BLE001
+                        print(
+                            f"[WARN] Failed to load baseline cache from {cache_path}: {exc}. "
+                            "Reactive baselines will be re-evaluated."
+                        )
+                    else:
+                        expected_agents = {config[0] for config in baseline_configs}
+                        baseline_cache = {
+                            agent: copy.deepcopy(cache_data[agent])
+                            for agent in expected_agents
+                            if agent in cache_data
+                        }
+                        baseline_cache_source = cache_path
+                        missing_agents = expected_agents - set(baseline_cache.keys())
+                        if missing_agents:
+                            missing_str = ", ".join(sorted(missing_agents))
+                            print(
+                                f"[WARN] Baseline cache missing entries for: {missing_str}. "
+                                "Those policies will be re-evaluated."
+                            )
+                        else:
+                            print(
+                                f"[INFO] Reusing cached reactive baseline results from {cache_path}"
+                            )
 
             for idx, (key, policy_cls, label) in enumerate(baseline_configs):
+                cached_entry = baseline_cache.get(key) if baseline_cache else None
+                if cached_entry:
+                    record_count = len(cached_entry.get("records", []))
+                    if record_count != args.episodes:
+                        print(
+                            f"[WARN] Cached {key} records ({record_count}) differ from --episodes ({args.episodes}). "
+                            "Proceeding with cached results."
+                        )
+                    aggregated[key] = copy.deepcopy(cached_entry)
+                    source_display = (
+                        str(baseline_cache_source)
+                        if baseline_cache_source is not None
+                        else "provided cache"
+                    )
+                    print(
+                        f"[INFO] Using cached results for {key} (source: {source_display})"
+                    )
+                    continue
+
                 env = create_env()
                 try:
                     records: List[Dict[str, List[float]]] = []
@@ -659,6 +753,38 @@ def main() -> None:
                     aggregated[key] = {
                         "records": records,
                         "summary": compute_agent_summary(records),
+                    }
+                finally:
+                    env.close()
+
+            if args.dqn_model is not None:
+                env = create_env()
+                try:
+                    dqn_agent = DQNAgent.load(args.dqn_model)
+                    dqn_agent.set_eval_mode()
+
+                    dqn_records: List[Dict[str, List[float]]] = []
+                    for episode in range(1, args.episodes + 1):
+                        episode_offset = len(baseline_configs) * args.episodes
+                        episode_seed = (
+                            base_seed + episode_offset + episode - 1 if base_seed is not None else None
+                        )
+                        np.random.seed(episode_seed)
+                        random.seed(episode_seed)
+                        record = evaluate_dqn_episode(
+                            env,
+                            dqn_agent,
+                            max_steps=args.max_steps,
+                            episode_idx=episode,
+                            total_episodes=args.episodes,
+                            seed=episode_seed,
+                            logger=logger,
+                        )
+                        dqn_records.append(record)
+
+                    aggregated["DQN"] = {
+                        "records": dqn_records,
+                        "summary": compute_agent_summary(dqn_records),
                     }
                 finally:
                     env.close()

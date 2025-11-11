@@ -74,15 +74,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="When resuming, reset epsilon to the CLI value (applied after any hyperparameter reset)",
     )
-    parser.add_argument("--epsilon", type=float, default=0.55, help="Initial epsilon for epsilon-greedy policy")
-    parser.add_argument("--epsilon-min", type=float, default=0.22, help="Minimum epsilon after decay")
-    parser.add_argument("--epsilon-decay", type=float, default=0.996, help="Episode-wise epsilon decay factor")
-    parser.add_argument("--alpha", type=float, default=0.03, help="Learning rate (alpha)")
+    parser.add_argument("--epsilon", type=float, default=0.40, help="Initial epsilon for epsilon-greedy policy")
+    parser.add_argument("--epsilon-min", type=float, default=0.10, help="Minimum epsilon after decay")
+    parser.add_argument("--epsilon-decay", type=float, default=0.995, help="Episode-wise epsilon decay factor")
+    parser.add_argument("--alpha", type=float, default=0.025, help="Learning rate (alpha)")
     parser.add_argument("--gamma", type=float, default=0.985, help="Discount factor (gamma)")
     parser.add_argument(
         "--trace-lambda",
         type=float,
-        default=0.6,
+        default=0.5,
         help="Eligibility trace decay parameter λ (0 disables traces)",
     )
     parser.add_argument(
@@ -321,9 +321,13 @@ def evaluate_checkpoint(
         return np.array(values, dtype=float)
 
     total_rewards = _collect("total_reward")
+    mean_rewards = _collect("mean_reward")
     final_qos = _collect("final_qos_total")
+    mean_qos_values = _collect("mean_qos")
     scaling_actions = _collect("scaling_actions")
+    noop_actions = _collect("noop_actions")
     max_workers = _collect("max_workers")
+    mean_workers = _collect("mean_workers")
 
     def _mean_std(values: np.ndarray) -> tuple[float, float]:
         if values.size == 0:
@@ -332,34 +336,58 @@ def evaluate_checkpoint(
         std = float(np.std(values)) if values.size > 1 else 0.0
         return mean, std
 
-    mean_reward, std_reward = _mean_std(total_rewards)
-    mean_qos, std_qos = _mean_std(final_qos)
+    mean_total_reward, std_total_reward = _mean_std(total_rewards)
+    mean_mean_reward, std_mean_reward = _mean_std(mean_rewards)
+    mean_final_qos, std_final_qos = _mean_std(final_qos)
+    mean_mean_qos, std_mean_qos = _mean_std(mean_qos_values)
     mean_scaling, std_scaling = _mean_std(scaling_actions)
-    mean_workers, std_workers = _mean_std(max_workers)
+    mean_noop, std_noop = _mean_std(noop_actions)
+    mean_max_workers, std_max_workers = _mean_std(max_workers)
+    mean_mean_workers, std_mean_workers = _mean_std(mean_workers)
 
     logger.info(
-        "[EVAL] Episode %d | reward=%.2f±%.2f qos=%.2f%%±%.2f%% scaling=%.1f±%.1f workers=%.1f±%.1f",
+        (
+            "[EVAL] Episode %d | total_reward=%.2f±%.2f mean_reward=%.2f±%.2f "
+            "final_qos=%.2f%%±%.2f%% mean_qos=%.2f%%±%.2f%% max_workers=%.1f±%.1f "
+            "mean_workers=%.1f±%.1f scaling=%.1f±%.1f noop=%.1f±%.1f"
+        ),
         checkpoint_episode,
-        mean_reward,
-        std_reward,
-        mean_qos * 100.0,
-        std_qos * 100.0,
+        mean_total_reward,
+        std_total_reward,
+        mean_mean_reward,
+        std_mean_reward,
+        mean_final_qos * 100.0,
+        std_final_qos * 100.0,
+        mean_mean_qos * 100.0,
+        std_mean_qos * 100.0,
+        mean_max_workers,
+        std_max_workers,
+        mean_mean_workers,
+        std_mean_workers,
         mean_scaling,
         std_scaling,
-        mean_workers,
-        std_workers,
+        mean_noop,
+        std_noop,
     )
 
     return {
         "episode": checkpoint_episode,
-        "mean_total_reward": mean_reward,
-        "std_total_reward": std_reward,
-        "mean_final_qos": mean_qos,
-        "std_final_qos": std_qos,
+        "mean_total_reward": mean_total_reward,
+        "std_total_reward": std_total_reward,
+        "mean_mean_reward": mean_mean_reward,
+        "std_mean_reward": std_mean_reward,
+        "mean_final_qos": mean_final_qos,
+        "std_final_qos": std_final_qos,
+        "mean_mean_qos": mean_mean_qos,
+        "std_mean_qos": std_mean_qos,
         "mean_scaling_actions": mean_scaling,
         "std_scaling_actions": std_scaling,
-        "mean_max_workers": mean_workers,
-        "std_max_workers": std_workers,
+        "mean_noop_actions": mean_noop,
+        "std_noop_actions": std_noop,
+        "mean_max_workers": mean_max_workers,
+        "std_max_workers": std_max_workers,
+        "mean_mean_workers": mean_mean_workers,
+        "std_mean_workers": std_mean_workers,
         "eval_episodes": args.eval_episodes,
     }
 
@@ -486,6 +514,7 @@ def main() -> None:
         scale_down_count = 0
         noop_count = 0
         max_workers_seen = float(observation[4]) if observation.size > 4 else 0.0
+        worker_counts: List[float] = []
         last_qos_violations = 0
         last_unfinished_tasks = 0
 
@@ -513,6 +542,7 @@ def main() -> None:
                 else:
                     noop_count += 1
             max_workers_seen = max(max_workers_seen, float(info.get("workers", next_observation[4])))
+            worker_counts.append(float(info.get("workers", next_observation[4])))
             last_qos_violations = int(info.get("qos_violations", last_qos_violations))
             last_unfinished_tasks = int(info.get("unfinished_tasks", last_unfinished_tasks))
 
@@ -582,14 +612,15 @@ def main() -> None:
             "scale_down_count": scale_down_count,
             "noop_count": noop_count,
             "max_workers": max_workers_seen,
+            "mean_workers": float(np.mean(worker_counts)) if worker_counts else max_workers_seen,
             "qos_violations": last_qos_violations,
             "unfinished_tasks": last_unfinished_tasks,
         }
         metrics.append(episode_metrics)
         logger.info(
             "Episode %d/%d | steps=%d reward=%.2f mean_qos=%.3f final_qos=%.3f tasks=%d"
-            " epsilon=%.3f scale_up=%d scale_down=%d noop=%d max_workers=%.0f qos_violations=%d"
-            " unfinished=%d",
+            " epsilon=%.3f scale_up=%d scale_down=%d noop=%d mean_workers=%.2f max_workers=%.0f"
+            " qos_violations=%d unfinished=%d",
             episode,
             args.episodes,
             step_count,
@@ -601,6 +632,7 @@ def main() -> None:
             episode_metrics["scale_up_count"],
             episode_metrics["scale_down_count"],
             episode_metrics["noop_count"],
+            episode_metrics["mean_workers"],
             episode_metrics["max_workers"],
             episode_metrics["qos_violations"],
             episode_metrics["unfinished_tasks"],

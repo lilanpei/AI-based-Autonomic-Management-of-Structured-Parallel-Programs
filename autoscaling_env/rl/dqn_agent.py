@@ -75,6 +75,7 @@ class DQNHyperparams:
     warmup_steps: int = 1_000
     max_grad_norm: float | None = 5.0
     hidden_layers: Tuple[int, ...] = (128, 64)
+    target_tau: float = 0.01
 
 
 @dataclass
@@ -95,6 +96,11 @@ class DQNAgent:
         self.device = self.device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
+
+        self._target_tau = float(getattr(self.hyperparams, "target_tau", 1.0))
+        if not (0.0 < self._target_tau <= 1.0):
+            raise ValueError("target_tau must be within (0, 1]")
+        self.hyperparams.target_tau = self._target_tau
 
         self.policy_net = QNetwork(
             self.observation_size,
@@ -198,7 +204,15 @@ class DQNAgent:
         return float(loss.item())
 
     def _sync_target_network(self) -> None:
-        self.target_net.load_state_dict(self.policy_net.state_dict())
+        tau = self._target_tau
+        if tau >= 1.0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+            return
+
+        with torch.no_grad():
+            for target_param, policy_param in zip(self.target_net.parameters(), self.policy_net.parameters()):
+                target_param.data.mul_(1.0 - tau)
+                target_param.data.add_(tau * policy_param.data)
 
     def save(self, output_path: Path) -> None:
         output_path = Path(output_path)

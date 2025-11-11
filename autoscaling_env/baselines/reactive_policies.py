@@ -45,12 +45,18 @@ class ReactiveAverage:
     Compatible with OpenFaaS Autoscaling Gym Environment
     """
 
-    def __init__(self, horizon_seconds: float = 10.0, safety_factor: float = 1.0):
+    def __init__(
+        self,
+        horizon_seconds: float = 8.0,
+        safety_factor: float = 1.0,
+        adjustment_factor: float = 0.5,
+    ):
         """Initialize policy with an optional planning horizon and safety margin."""
         # For compatibility with RL agents
         self.name = "Reactive-Average"
         self.horizon_seconds = max(horizon_seconds, 0.1)
         self.safety_factor = max(safety_factor, 1.0)
+        self.adjustment_factor = max(adjustment_factor, 0.0)
         self._enqueued_total = 0.0
 
     def set_horizon(self, horizon_seconds: float) -> None:
@@ -80,28 +86,31 @@ class ReactiveAverage:
         total_enqueued = self._enqueued_total
 
         service_time = max(avg_time, 0.1)  # seconds per task (avg case)
-        horizon = max(self.horizon_seconds, service_time)
+        horizon = max(self.horizon_seconds, service_time, 1.0)
 
-        # Tasks a single worker can handle within the horizon
-        tasks_per_worker = horizon / service_time if service_time > 0 else float("inf")
-
-        # Workers needed to clear current queue within the horizon
-        workers_for_queue = (worker_q / tasks_per_worker) if tasks_per_worker > 0 else 0
-
-        # Workers needed to handle expected incoming tasks during the horizon
-        workers_for_arrival = arrival_rate * service_time if arrival_rate > 0 else 0
-
-        # Estimate how many workers are currently busy.
-        active_tasks = _estimate_active_tasks(total_enqueued, worker_q, result_q, output_q)
-        collector_adjustment = 1.0 if active_tasks > 0 else 0.0
-        busy_workers = min(workers, max(0.0, active_tasks - collector_adjustment))
+        # Analytical FARM model
+        # 1) Provision for expected arrivals in the next horizon (λ * service_time)
+        workers_for_arrival = max(0.0, arrival_rate) * service_time
+        # 2) Clear existing backlog within the horizon (queue / horizon * service_time)
+        workers_for_queue = (worker_q / horizon) * service_time
 
         optimal_workers = (workers_for_queue + workers_for_arrival) * self.safety_factor
         optimal_workers = max(1.0, optimal_workers)
 
-        # Calculate difference relative to currently busy workers rather than the
-        # raw replica count so idle capacity doesn't mask backlog pressure.
-        delta = optimal_workers - busy_workers
+        # 3) Derive active tasks from mirrored enqueue counter and translate to busy capacity
+        active_tasks = _estimate_active_tasks(total_enqueued, worker_q, result_q, output_q)
+        collector_adjustment = 1.0 if active_tasks > 0 else 0.0
+        active_tasks_workers = min(
+            workers,
+            max(0.0, active_tasks - collector_adjustment),
+        )
+
+        busy_workers = (
+            (active_tasks_workers / horizon) * service_time * self.adjustment_factor
+        )
+
+        # 4) Compare target capacity with currently idleable workers
+        delta = optimal_workers - (workers - busy_workers)
 
         # Map delta to action
         if delta >= 0.5:
@@ -146,13 +155,19 @@ class ReactiveMaximum:
     Compatible with OpenFaaS Autoscaling Gym Environment
     """
 
-    def __init__(self, horizon_seconds: float = 10.0, safety_factor: float = 1.0):
+    def __init__(
+        self,
+        horizon_seconds: float = 8.0,
+        safety_factor: float = 1.0,
+        adjustment_factor: float = 1.0,
+    ):
         """Initialize policy with planning horizon and a safety margin."""
         # For compatibility with RL agents
         self.name = "Reactive-Maximum"
         self.horizon_seconds = max(horizon_seconds, 0.1)
         self.safety_factor = max(safety_factor, 1.0)
         self._enqueued_total = 0.0
+        self.adjustment_factor = max(adjustment_factor, 1.0)
 
     def set_horizon(self, horizon_seconds: float) -> None:
         """Allow callers to update the planning horizon dynamically."""
@@ -177,22 +192,29 @@ class ReactiveMaximum:
         total_enqueued = self._enqueued_total
 
         service_time = max(max_time, avg_time, 0.1)
-        horizon = max(self.horizon_seconds, service_time)
+        horizon = max(self.horizon_seconds, service_time, 1.0)
 
-        tasks_per_worker = horizon / service_time if service_time > 0 else float("inf")
-
-        workers_for_queue = (worker_q / tasks_per_worker) if tasks_per_worker > 0 else 0
-        workers_for_arrival = arrival_rate * service_time if arrival_rate > 0 else 0
-
-        active_tasks = _estimate_active_tasks(total_enqueued, worker_q, result_q, output_q)
-        collector_adjustment = 1.0 if active_tasks > 0 else 0.0
-        busy_workers = min(workers, max(0.0, active_tasks - collector_adjustment))
+        # Analytical FARM model (worst-case service time)
+        # 1) Future arrivals: λ * service_time using max_time for safety
+        workers_for_arrival = max(0.0, arrival_rate) * service_time
+        # 2) Backlog clearance within horizon
+        workers_for_queue = (worker_q / horizon) * service_time
 
         optimal_workers = (workers_for_queue + workers_for_arrival) * self.safety_factor
         optimal_workers = max(1.0, optimal_workers)
 
-        # Calculate difference relative to currently busy workers.
-        delta = optimal_workers - busy_workers
+        # 3) Translate mirrored active tasks into effective busy capacity
+        active_tasks = _estimate_active_tasks(total_enqueued, worker_q, result_q, output_q)
+        collector_adjustment = 1.0 if active_tasks > 0 else 0.0
+        active_tasks_workers = min(
+            workers,
+            max(0.0, active_tasks - collector_adjustment),
+        )
+
+        busy_workers = (active_tasks_workers / horizon) * service_time * self.adjustment_factor
+
+        # 4) Calculate difference relative to currently idleable workers.
+        delta = optimal_workers - (workers - busy_workers)
 
         # Map delta to action
         if delta >= 0.5:
