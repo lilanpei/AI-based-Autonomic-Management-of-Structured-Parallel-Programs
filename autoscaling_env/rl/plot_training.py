@@ -545,7 +545,17 @@ def render_training_curves(
     if ax_scaling.get_legend_handles_labels()[0]:
         ax_scaling.legend(loc="best", frameon=False)
 
-    ax_reward.set_ylim(-200.0, 200.0)
+    reward_limits = _auto_limits(
+        total_rewards,
+        rewards_smooth,
+        eval_rewards,
+        margin_ratio=0.15,
+        low_quantile=0.02,
+        high_quantile=0.98,
+        min_span=10.0,
+    )
+    if reward_limits is not None:
+        ax_reward.set_ylim(*reward_limits)
 
     qos_limits = _auto_limits(
         final_qos,
@@ -562,10 +572,34 @@ def render_training_curves(
         ax_qos.set_ylim(lower, upper)
     ax_qos.yaxis.set_major_locator(MaxNLocator(nbins=6, prune="both"))
 
-    ax_workers.set_ylim(12.0, 32.0)
+    worker_limits = _auto_limits(
+        max_workers,
+        workers_smooth,
+        eval_max_workers,
+        margin_ratio=0.1,
+        low_quantile=0.02,
+        high_quantile=0.98,
+        floor_zero=True,
+        integer=True,
+        min_span=4.0,
+    )
+    if worker_limits is not None:
+        ax_workers.set_ylim(*worker_limits)
     ax_workers.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=6))
 
-    ax_scaling.set_ylim(12.0, 32.0)
+    scaling_limits = _auto_limits(
+        scaling_events,
+        scaling_smooth,
+        eval_scaling,
+        margin_ratio=0.1,
+        low_quantile=0.02,
+        high_quantile=0.98,
+        floor_zero=True,
+        integer=True,
+        min_span=4.0,
+    )
+    if scaling_limits is not None:
+        ax_scaling.set_ylim(*scaling_limits)
     ax_scaling.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=6))
 
     fig.tight_layout(rect=(0, 0, 1, 0.97))

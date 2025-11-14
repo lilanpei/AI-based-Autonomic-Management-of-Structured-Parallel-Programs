@@ -43,11 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume-model", type=Path, default=None, help="Path to a previously trained DQN checkpoint (.pt) to resume")
 
     # Hyperparameters
-    parser.add_argument("--gamma", type=float, default=0.988, help="Discount factor")
-    parser.add_argument("--learning-rate", type=float, default=2e-4, help="Adam learning rate")
-    parser.add_argument("--epsilon-start", type=float, default=0.35, help="Initial epsilon for exploration")
+    parser.add_argument("--gamma", type=float, default=0.97, help="Discount factor")
+    parser.add_argument("--learning-rate", type=float, default=3e-4, help="Adam learning rate")
+    parser.add_argument("--epsilon-start", type=float, default=0.8, help="Initial epsilon for exploration")
     parser.add_argument("--epsilon-end", type=float, default=0.05, help="Minimum epsilon after decay")
-    parser.add_argument("--epsilon-decay", type=float, default=0.9975, help="Episode-wise epsilon decay factor")
+    parser.add_argument("--epsilon-decay", type=float, default=0.98, help="Episode-wise epsilon decay factor")
     parser.add_argument("--batch-size", type=int, default=64, help="Mini-batch size for SGD updates")
     parser.add_argument("--replay-capacity", type=int, default=75_000, help="Replay buffer capacity")
     parser.add_argument("--target-update", type=int, default=600, help="Steps between target network updates")
@@ -57,8 +57,8 @@ def parse_args() -> argparse.Namespace:
         default=0.01,
         help="Soft-update interpolation factor (1.0 falls back to hard updates)",
     )
-    parser.add_argument("--warmup-steps", type=int, default=2_000, help="Steps to collect before training begins")
-    parser.add_argument("--max-grad-norm", type=float, default=5.0, help="Gradient clipping norm (0 disables)")
+    parser.add_argument("--warmup-steps", type=int, default=400, help="Steps to collect before training begins")
+    parser.add_argument("--max-grad-norm", type=float, default=3.0, help="Gradient clipping norm (0 disables)")
     parser.add_argument("--hidden-layers", type=int, nargs="+", default=[128, 64], help="Hidden layer sizes for the Q-network")
 
     parser.add_argument("--checkpoint-every", type=int, default=10, help="Save intermediate checkpoints every N episodes (0 to disable)")
@@ -182,9 +182,13 @@ def evaluate_checkpoint(
         return np.array(values, dtype=float)
 
     total_rewards = _collect("total_reward")
+    mean_rewards = _collect("mean_reward")
     final_qos = _collect("final_qos_total")
+    mean_qos_values = _collect("mean_qos")
     scaling_actions = _collect("scaling_actions")
+    noop_actions = _collect("noop_actions")
     max_workers = _collect("max_workers")
+    mean_workers_values = _collect("mean_workers")
 
     def _mean_std(values: np.ndarray) -> tuple[float, float]:
         if values.size == 0:
@@ -193,34 +197,58 @@ def evaluate_checkpoint(
         std = float(np.std(values)) if values.size > 1 else 0.0
         return mean, std
 
-    mean_reward, std_reward = _mean_std(total_rewards)
-    mean_qos, std_qos = _mean_std(final_qos)
+    mean_total_reward, std_total_reward = _mean_std(total_rewards)
+    mean_mean_reward, std_mean_reward = _mean_std(mean_rewards)
+    mean_final_qos, std_final_qos = _mean_std(final_qos)
+    mean_mean_qos, std_mean_qos = _mean_std(mean_qos_values)
     mean_scaling, std_scaling = _mean_std(scaling_actions)
-    mean_workers, std_workers = _mean_std(max_workers)
+    mean_noop, std_noop = _mean_std(noop_actions)
+    mean_max_workers, std_max_workers = _mean_std(max_workers)
+    mean_mean_workers, std_mean_workers = _mean_std(mean_workers_values)
 
     logger.info(
-        "[EVAL] Episode %d | reward=%.2f±%.2f qos=%.2f%%±%.2f%% scaling=%.1f±%.1f workers=%.1f±%.1f",
+        (
+            "[EVAL] Episode %d | total_reward=%.2f±%.2f mean_reward=%.2f±%.2f "
+            "final_qos=%.2f%%±%.2f%% mean_qos=%.2f%%±%.2f%% max_workers=%.1f±%.1f "
+            "mean_workers=%.1f±%.1f scaling=%.1f±%.1f noop=%.1f±%.1f"
+        ),
         checkpoint_episode,
-        mean_reward,
-        std_reward,
-        mean_qos * 100.0,
-        std_qos * 100.0,
+        mean_total_reward,
+        std_total_reward,
+        mean_mean_reward,
+        std_mean_reward,
+        mean_final_qos * 100.0,
+        std_final_qos * 100.0,
+        mean_mean_qos * 100.0,
+        std_mean_qos * 100.0,
+        mean_max_workers,
+        std_max_workers,
+        mean_mean_workers,
+        std_mean_workers,
         mean_scaling,
         std_scaling,
-        mean_workers,
-        std_workers,
+        mean_noop,
+        std_noop,
     )
 
     return {
         "episode": checkpoint_episode,
-        "mean_total_reward": mean_reward,
-        "std_total_reward": std_reward,
-        "mean_final_qos": mean_qos,
-        "std_final_qos": std_qos,
+        "mean_total_reward": mean_total_reward,
+        "std_total_reward": std_total_reward,
+        "mean_mean_reward": mean_mean_reward,
+        "std_mean_reward": std_mean_reward,
+        "mean_final_qos": mean_final_qos,
+        "std_final_qos": std_final_qos,
+        "mean_mean_qos": mean_mean_qos,
+        "std_mean_qos": std_mean_qos,
         "mean_scaling_actions": mean_scaling,
         "std_scaling_actions": std_scaling,
-        "mean_max_workers": mean_workers,
-        "std_max_workers": std_workers,
+        "mean_noop_actions": mean_noop,
+        "std_noop_actions": std_noop,
+        "mean_max_workers": mean_max_workers,
+        "std_max_workers": std_max_workers,
+        "mean_mean_workers": mean_mean_workers,
+        "std_mean_workers": std_mean_workers,
         "eval_episodes": args.eval_episodes,
     }
 
@@ -511,7 +539,10 @@ def main() -> None:
     summary_payload = {
         "episodes_completed": len(metrics),
         "total_steps": total_steps,
-        "config": {key: getattr(args, key) for key in vars(args)},
+        "config": {
+            key: (str(value) if isinstance(value, Path) else value)
+            for key, value in vars(args).items()
+        },
     }
     write_json(summary_payload, experiment_dir / "training_summary.json")
 

@@ -64,16 +64,16 @@ class QNetwork(nn.Module):
 
 @dataclass
 class DQNHyperparams:
-    gamma: float = 0.99
-    learning_rate: float = 1e-3
-    epsilon_start: float = 0.4
+    gamma: float = 0.97
+    learning_rate: float = 3e-4
+    epsilon_start: float = 0.8
     epsilon_end: float = 0.05
-    epsilon_decay: float = 0.995
+    epsilon_decay: float = 0.98
     batch_size: int = 64
-    replay_capacity: int = 50_000
-    target_update_interval: int = 500
-    warmup_steps: int = 1_000
-    max_grad_norm: float | None = 5.0
+    replay_capacity: int = 75_000
+    target_update_interval: int = 600
+    warmup_steps: int = 400
+    max_grad_norm: float | None = 3.0
     hidden_layers: Tuple[int, ...] = (128, 64)
     target_tau: float = 0.01
 
@@ -157,7 +157,8 @@ class DQNAgent:
     ) -> None:
         state_norm = self._normalize(state)
         next_state_norm = self._normalize(next_state)
-        self.replay_buffer.push(Transition(state_norm, action, reward, next_state_norm, done))
+        clipped_reward = float(np.clip(reward, -50.0, 50.0))
+        self.replay_buffer.push(Transition(state_norm, action, clipped_reward, next_state_norm, done))
 
     def decay_epsilon(self) -> None:
         if self._epsilon > self.hyperparams.epsilon_end:
@@ -229,12 +230,14 @@ class DQNAgent:
             "updates_done": self._updates_done,
             "observation_low": self._orig_low.tolist(),
             "observation_high": self._orig_high.tolist(),
+            "replay_buffer": self.replay_buffer,
         }
         torch.save(payload, output_path)
 
     @classmethod
     def load(cls, path: Path, device: Optional[torch.device] = None) -> "DQNAgent":
-        checkpoint = torch.load(Path(path), map_location=device or "cpu")
+        # PyTorch 2.6+ requires weights_only=False for numpy objects in checkpoint
+        checkpoint = torch.load(Path(path), map_location=device or "cpu", weights_only=False)
         hyperparams = checkpoint.get("hyperparams")
         agent = cls(
             observation_size=checkpoint["observation_size"],
@@ -254,6 +257,10 @@ class DQNAgent:
         agent._epsilon = float(checkpoint.get("epsilon", agent.hyperparams.epsilon_end))
         agent._steps_done = int(checkpoint.get("steps_done", 0))
         agent._updates_done = int(checkpoint.get("updates_done", 0))
+
+        if "replay_buffer" in checkpoint:
+            agent.replay_buffer = checkpoint["replay_buffer"]
+
         agent.policy_net.to(agent.device)
         agent.target_net.to(agent.device)
         return agent
