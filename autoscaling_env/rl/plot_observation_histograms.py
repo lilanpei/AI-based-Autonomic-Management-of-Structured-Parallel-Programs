@@ -140,6 +140,17 @@ def main() -> None:
             continue
         data = np.asarray(values, dtype=float)
         bins = min(args.bins, max(10, int(np.sqrt(data.size))))
+        plt.rcParams.update(
+            {
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 12,
+                "xtick.labelsize": 11,
+                "ytick.labelsize": 11,
+                "legend.fontsize": 11,
+                "figure.titlesize": 16,
+            }
+        )
         plt.figure(figsize=(6, 4))
         plt.hist(data, bins=bins, color="#1f77b4", edgecolor="black", alpha=0.75)
         plt.title(f"Distribution of {key}")

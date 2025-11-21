@@ -184,20 +184,26 @@ faas-cli up -f stack.yaml
 
 This builds Docker images, pushes to registry (`lilanpei/*:latest`), and deploys to OpenFaaS.
 
-### **Orchestrator Invocation**
+### **Driving Experiments**
 
-Functions are invoked by `orchestrator/workflow_controller.py`:
+Functions are driven by the Gym-based autoscaling environment and scripts in `autoscaling_env/`:
 
 ```bash
-cd orchestrator
-python workflow_controller.py --tasks 100 --workers 3
-```
+# From the repository root
 
-**This does**:
-1. Deploys emitter-1, collector-1, worker-1/2/3
-2. Scales OpenFaaS queue-worker deployment
-3. Invokes functions with payload (Redis config, timeouts, etc.)
-4. Monitors queue progress in real-time
+# 1. Deploy functions (once)
+cd openfaas-functions
+faas-cli up -f stack.yaml
+
+# 2. Run a reactive baseline comparison
+cd autoscaling_env/baselines
+python test_reactive_baselines.py --agent both --steps 30 --step-duration 8 --horizon 8
+
+# 3. Train RL agents (from project root using module form)
+cd autoscaling_env/rl
+python -m train_sarsa --episodes 100 --max-steps 30 --step-duration 8 --initial-workers 12
+python -m train_dqn   --episodes 120 --max-steps 30 --step-duration 8 --initial-workers 12
+```
 
 ---
 
@@ -310,27 +316,16 @@ Redis queues enable decoupled communication:
 
 ---
 
-## 🔗 Integration with Orchestrator
+### **Integration with Autoscaling Environment**
 
-### **Workflow Controller** (`orchestrator/workflow_controller.py`)
+The RL and baseline scripts create and manage the farm skeleton via
+`autoscaling_env.openfaas_autoscaling_env.OpenFaaSAutoscalingEnv`, which in turn
+uses the helpers in `../utilities/utilities.py` to:
 
-**Responsibilities**:
-- Initialize OpenFaaS environment
-- Deploy functions (emitter, collector, N workers)
-- Generate task configurations (phase-based)
-- Monitor queue progress in real-time
-- Analyze results (QoS, completion rate)
-
-**Usage**: `python workflow_controller.py --tasks 100 --workers 3`
-
-### **Worker Scaler** (`orchestrator/worker_scaler.py`)
-
-**Responsibilities**:
-- Scale workers up (deploy new instances)
-- Scale workers down (graceful shutdown with SYN/ACK)
-- Handle control message protocol
-
-**Usage**: `python worker_scaler.py +2` (scale up by 2)
+- initialise the emitter/worker/collector deployment,
+- clear and manage Redis queues,
+- apply scale-up/scale-down actions using the SYN/ACK control queues,
+- collect QoS and workload metrics for observations and rewards.
 
 ---
 

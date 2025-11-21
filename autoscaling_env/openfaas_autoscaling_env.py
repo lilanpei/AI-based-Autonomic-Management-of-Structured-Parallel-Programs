@@ -111,6 +111,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         self.default_task_seed = task_seed
         self._pending_task_seed: int | None = None
         self._current_task_seed: int | None = task_seed
+        self.redis_client = None
 
         # Define action/observation spaces immediately so agents can query bounds
         self.action_space = spaces.Discrete(3)
@@ -142,7 +143,7 @@ class OpenFaaSAutoscalingEnv(gym.Env):
             dtype=np.float32
         )
 
-        # Initialize workflow if requested (like workflow_controller.py)
+        # Initialize workflow if requested (ensures emitter/collector have new program_start_time)
         if self.initialize_workflow:
             print("\n" + "="*70)
             print("INITIALIZING OPENFAAS WORKFLOW")
@@ -1120,7 +1121,10 @@ class OpenFaaSAutoscalingEnv(gym.Env):
         print("[INFO] Closing environment and sending termination signals...")
 
         # Send terminate control messages to all components
-        if self.redis_client:
+        redis_client = getattr(self, "redis_client", None)
+        if not redis_client:
+            print("[INFO] No Redis client available; skipping termination messages.")
+        else:
             try:
                 end_time = (get_utc_now() - self.program_start_time).total_seconds()
 
@@ -1140,19 +1144,19 @@ class OpenFaaSAutoscalingEnv(gym.Env):
                 )
 
                 # Send termination messages to all components
-                send_control_messages(message, self.redis_client, self.config.get("emitter_control_syn_queue_name"), 1)
-                send_control_messages(message, self.redis_client, self.config.get("worker_control_syn_queue_name"), current_workers)
-                send_control_messages(message, self.redis_client, self.config.get("collector_control_syn_queue_name"), 1)
+                send_control_messages(message, redis_client, self.config.get("emitter_control_syn_queue_name"), 1)
+                send_control_messages(message, redis_client, self.config.get("worker_control_syn_queue_name"), current_workers)
+                send_control_messages(message, redis_client, self.config.get("collector_control_syn_queue_name"), 1)
 
                 print("[INFO] Termination control messages sent to all components.")
 
                 # Close Redis connection
-                self.redis_client.close()
+                redis_client.close()
                 print("[INFO] Redis connection closed.")
 
             except Exception as e:
                 print(f"[WARNING] Error during cleanup: {e}")
-                if self.redis_client:
-                    self.redis_client.close()
+                if redis_client:
+                    redis_client.close()
 
         print("[INFO] Environment closed")

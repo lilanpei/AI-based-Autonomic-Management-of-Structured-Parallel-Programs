@@ -173,6 +173,18 @@ def plot_results(results, agent_name, save_dir='plots'):
         save_dir: Directory to save plots
     """
     os.makedirs(save_dir, exist_ok=True)
+    # Use larger, consistent fonts for baseline result plots.
+    plt.rcParams.update(
+        {
+            "font.size": 12,
+            "axes.titlesize": 14,
+            "axes.labelsize": 12,
+            "xtick.labelsize": 11,
+            "ytick.labelsize": 11,
+            "legend.fontsize": 11,
+            "figure.titlesize": 16,
+        }
+    )
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     steps = range(1, len(results['rewards']) + 1)

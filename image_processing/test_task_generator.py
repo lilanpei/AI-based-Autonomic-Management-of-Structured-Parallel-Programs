@@ -95,7 +95,19 @@ def plot_arrival_rates(sim_results, phase_definitions, base_rate, output_file="t
         phase_names,
     ) = sim_results
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={"height_ratios": [3, 2]})
+    plt.rcParams.update(
+        {
+            "font.size": 14,
+            "axes.titlesize": 18,
+            "axes.labelsize": 14,
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12,
+            "legend.fontsize": 12,
+            "figure.titlesize": 20,
+        }
+    )
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), gridspec_kw={"height_ratios": [3, 2]})
     fig.subplots_adjust(hspace=0.35)
 
     # Plot arrival rate over time
@@ -118,7 +130,7 @@ def plot_arrival_rates(sim_results, phase_definitions, base_rate, output_file="t
         linestyle=":",
         linewidth=1.2,
         alpha=0.8,
-        label=f"Base Rate ({base_rate:.0f} tasks/min)",
+        label=f"Base Rate",
     )
 
     max_rate = max(rates.max(), base_rate) * 1.2
@@ -134,8 +146,8 @@ def plot_arrival_rates(sim_results, phase_definitions, base_rate, output_file="t
     ax1.set_ylim(0, max_rate)
 
     legend_handles = [rate_line, base_line] + phase_handles
-    legend_labels = ["Arrival Rate", f"Base Rate ({base_rate:.0f} tasks/min)"] + phase_names
-    ax1.legend(legend_handles, legend_labels, loc="best", fontsize=9)
+    legend_labels = ["Arrival Rate", f"Base Rate"] + phase_names
+    ax1.legend(legend_handles, legend_labels, loc="best", fontsize=12)
 
     # Rate distribution by phase
     phase_data = []

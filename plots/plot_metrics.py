@@ -13,6 +13,19 @@ last_n = str(configuration.get("number_of_most_recent_logs"))  # Number of last 
 log_dir = configuration.get("log_dir")
 plot_output_dir = configuration.get("plot_output_dir")
 
+# Use larger, consistent fonts for orchestrator metrics plots.
+plt.rcParams.update(
+    {
+        "font.size": 12,
+        "axes.titlesize": 14,
+        "axes.labelsize": 12,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
+        "legend.fontsize": 11,
+        "figure.titlesize": 16,
+    }
+)
+
 # Create directory if it doesn't exist
 os.makedirs(plot_output_dir, exist_ok=True)
 

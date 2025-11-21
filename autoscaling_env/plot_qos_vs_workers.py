@@ -13,7 +13,7 @@ def main():
     args = parser.parse_args()
 
     script_dir = Path(__file__).resolve().parent
-    default_json = script_dir / "runs/comparison/compare_20251113_101940/aggregated_results.json"
+    default_json = script_dir / "runs/comparison/compare_20251119_112155/aggregated_results.json"
     json_path = Path(args.json) if args.json else default_json
 
     with open(json_path, "r") as f:
@@ -21,7 +21,7 @@ def main():
 
     present_agents = list(data.get("agents", {}).keys())
 
-    preferred = ["SARSA", "ReactiveAverage", "ReactiveMaximum"]
+    preferred = ["DQN", "SARSA", "ReactiveAverage", "ReactiveMaximum"]
     if args.agents:
         selected = [a.strip() for a in args.agents.split(",") if a.strip()]
     else:
@@ -29,8 +29,25 @@ def main():
         if not selected:
             selected = present_agents
 
-    colors = {"SARSA": "#1f77b4", "ReactiveAverage": "#ff7f0e", "ReactiveMaximum": "#2ca02c"}
-    markers = {"SARSA": "o", "ReactiveAverage": "s", "ReactiveMaximum": "^"}
+    colors = {
+        "DQN": "#d62728",
+        "SARSA": "#1f77b4",
+        "ReactiveAverage": "#ff7f0e",
+        "ReactiveMaximum": "#2ca02c",
+    }
+    markers = {"DQN": "D", "SARSA": "o", "ReactiveAverage": "s", "ReactiveMaximum": "^"}
+
+    plt.rcParams.update(
+        {
+            "font.size": 12,
+            "axes.titlesize": 14,
+            "axes.labelsize": 12,
+            "xtick.labelsize": 11,
+            "ytick.labelsize": 11,
+            "legend.fontsize": 11,
+            "figure.titlesize": 16,
+        }
+    )
 
     plt.figure(figsize=(7, 5), dpi=140)
 
@@ -78,7 +95,7 @@ def main():
     plt.title(f"QoS vs Workers ({args.max_runs} runs)")
     plt.grid(True, linestyle="--", alpha=0.4, zorder=0)
     if plotted:
-        plt.legend(frameon=True, loc="lower right")
+        plt.legend(frameon=True, loc="lower right", ncol=2)
     plt.tight_layout()
 
     if args.save:

@@ -31,7 +31,7 @@ from autoscaling_env.rl.utils import (
     prepare_output_directory,
     write_json,
 )
-from utilities.utilities import get_utc_now
+from utilities.utilities import get_utc_now, get_config
 
 
 DEFAULT_DISCRETIZATION_BINS = (4, 7, 1, 1, 8, 8, 1, 5, 6)
@@ -460,6 +460,13 @@ def main() -> None:
     logger = configure_logging(experiment_dir / "logs")
     logger.info("Experiment directory: %s", experiment_dir)
     logger.info("Training configuration: %s", " ".join(f"{k}={v}" for k, v in sorted(vars(args).items())))
+    try:
+        full_config = get_config()
+        reward_cfg = full_config.get("reward", {})
+    except Exception as exc:
+        logger.warning("Unable to load reward configuration: %s", exc)
+    else:
+        logger.info("Reward configuration: %s", reward_cfg)
 
     env = OpenFaaSAutoscalingEnv(
         max_steps=args.max_steps,
@@ -701,7 +708,7 @@ def main() -> None:
             episodes_for_plot,
             eval_history,
             plots_dir / "training_curves.png",
-            title="SARSA Training Progress",
+            title="SARSA Training Curves",
         )
     except ValueError as exc:
         logger.warning("Skipping training plot generation: %s", exc)

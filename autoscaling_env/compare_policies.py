@@ -428,8 +428,23 @@ def plot_step_plots(
         ("worker_counts", "Worker Count", "Workers", lambda x: x),
         ("queue_lengths", "Worker Queue Length", "Tasks in Queue", lambda x: x),
     ]
+    # Use larger, more readable fonts and a bigger figure for comparison plots,
+    # so that the 4 subplots remain legible when embedded in an IEEE-style
+    # paper (e.g., two-column layout).
+    plt.rcParams.update(
+        {
+            "font.size": 12,
+            "axes.titlesize": 14,
+            "axes.labelsize": 12,
+            "xtick.labelsize": 11,
+            "ytick.labelsize": 11,
+            "legend.fontsize": 11,
+            "figure.titlesize": 16,
+        }
+    )
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 8), constrained_layout=True)
+    # Slightly larger canvas to give each subplot more space.
+    fig, axes = plt.subplots(2, 2, figsize=(10, 7), constrained_layout=True)
     color_cycle = plt.get_cmap("tab10")
 
     any_plotted = False
@@ -494,8 +509,9 @@ def plot_step_plots(
         plt.close(fig)
         return
 
-    fig.suptitle("Policy Comparison: Mean ± Std over Steps", fontsize=16)
-    fig.savefig(output_path, dpi=200)
+    fig.suptitle("Policy Comparison: Mean \u00b1 Std over Steps", fontsize=20)
+    # Higher DPI export and tight bounding box for better readability in print.
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -541,9 +557,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--sarsa-cache",
+        type=Path,
+        default=None,
+        help=(
+            "Reuse SARSA results from an existing comparison directory or aggregated results file"
+        ),
+    )
+    parser.add_argument(
         "--agents",
         nargs="+",
-        default=["SARSA", "ReactiveAverage", "ReactiveMaximum"],
+        default=["DQN", "SARSA", "ReactiveAverage", "ReactiveMaximum"],
         help="Subset of agents to include in plots/summaries (e.g. 'agent reactiveaverage')",
     )
     args = parser.parse_args()
@@ -576,7 +600,8 @@ def main() -> None:
             raise ValueError("Aggregated results do not contain step records for the requested agents")
 
         plot_path = run_dir / "comparison_plots.png"
-        plot_step_boxplots(records_by_agent, plot_path)
+        # Reuse the main step-plotting function so fonts and styles stay consistent.
+        plot_step_plots(records_by_agent, plot_path)
         print_agent_summaries(aggregated, selected_agents)
 
         log_path = run_dir / "comparison.log"
@@ -586,8 +611,8 @@ def main() -> None:
         print(f"[INFO] Loaded aggregated results from {aggregated_path}")
         return
 
-    if args.model is None:
-        parser.error("--model is required unless --plot-only is specified")
+    if args.model is None and args.sarsa_cache is None:
+        parser.error("--model is required unless --plot-only is specified or --sarsa-cache is used")
 
     timestamp = get_utc_now().strftime("%Y%m%d_%H%M%S")
     output_dir = args.output_dir / f"compare_{timestamp}"
@@ -617,6 +642,37 @@ def main() -> None:
             np.random.seed(base_seed)
             random.seed(base_seed)
 
+            sarsa_cache_entry = None
+            if args.sarsa_cache is not None:
+                cache_candidate = args.sarsa_cache
+                sarsa_cache_path = (
+                    cache_candidate / AGGREGATED_FILENAME
+                    if cache_candidate.is_dir()
+                    else cache_candidate
+                )
+                if not sarsa_cache_path.exists():
+                    print(
+                        f"[WARN] SARSA cache not found at {sarsa_cache_path}. SARSA will be re-evaluated."
+                    )
+                else:
+                    try:
+                        sarsa_cache_data = load_aggregated_results(sarsa_cache_path)
+                    except Exception as exc:  # noqa: BLE001
+                        print(
+                            f"[WARN] Failed to load SARSA cache from {sarsa_cache_path}: {exc}. "
+                            "SARSA will be re-evaluated."
+                        )
+                    else:
+                        cached_sarsa = sarsa_cache_data.get("SARSA")
+                        if cached_sarsa is None:
+                            print(
+                                f"[WARN] SARSA cache at {sarsa_cache_path} does not contain 'SARSA'. "
+                                "SARSA will be re-evaluated."
+                            )
+                        else:
+                            sarsa_cache_entry = copy.deepcopy(cached_sarsa)
+                            print(f"[INFO] Reusing cached SARSA results from {sarsa_cache_path}")
+
             def create_env() -> OpenFaaSAutoscalingEnv:
                 return OpenFaaSAutoscalingEnv(
                     max_steps=args.max_steps,
@@ -629,32 +685,41 @@ def main() -> None:
                     task_seed=task_seed,
                 )
 
-            # Evaluate SARSA agent
-            env = create_env()
-            try:
-                agent = SARSAAgent.load(args.model)
-                setattr(agent, "model_path", str(args.model))
-                discretization = build_discretization_config(
-                    observation_low=env.observation_space.low,
-                    observation_high=env.observation_space.high,
-                    bins_per_dimension=agent.discretization.bins_per_dimension,
-                )
-                agent.discretization = discretization
+            # Evaluate SARSA agent (or reuse cached results)
+            if sarsa_cache_entry is not None:
+                aggregated["SARSA"] = sarsa_cache_entry
+            else:
+                if args.model is None:
+                    raise ValueError(
+                        "SARSA cache was requested but could not be used; "
+                        "--model must be provided to re-evaluate SARSA."
+                    )
 
-                sarsa_records: List[Dict[str, List[float]]] = []
-                for episode in range(1, args.episodes + 1):
-                    episode_seed = base_seed + episode - 1 if base_seed is not None else None
-                    np.random.seed(episode_seed)
-                    random.seed(episode_seed)
-                    record = run_sarsa_episode(env, agent, args.max_steps, episode, args.episodes, episode_seed)
-                    sarsa_records.append(record)
+                env = create_env()
+                try:
+                    agent = SARSAAgent.load(args.model)
+                    setattr(agent, "model_path", str(args.model))
+                    discretization = build_discretization_config(
+                        observation_low=env.observation_space.low,
+                        observation_high=env.observation_space.high,
+                        bins_per_dimension=agent.discretization.bins_per_dimension,
+                    )
+                    agent.discretization = discretization
 
-                aggregated["SARSA"] = {
-                    "records": sarsa_records,
-                    "summary": compute_agent_summary(sarsa_records),
-                }
-            finally:
-                env.close()
+                    sarsa_records: List[Dict[str, List[float]]] = []
+                    for episode in range(1, args.episodes + 1):
+                        episode_seed = base_seed + episode - 1 if base_seed is not None else None
+                        np.random.seed(episode_seed)
+                        random.seed(episode_seed)
+                        record = run_sarsa_episode(env, agent, args.max_steps, episode, args.episodes, episode_seed)
+                        sarsa_records.append(record)
+
+                    aggregated["SARSA"] = {
+                        "records": sarsa_records,
+                        "summary": compute_agent_summary(sarsa_records),
+                    }
+                finally:
+                    env.close()
 
             requested_dqn = any(
                 AGENT_ALIAS_MAP.get(_normalize_agent_token(name), name) == "DQN"
@@ -778,7 +843,6 @@ def main() -> None:
                             episode_idx=episode,
                             total_episodes=args.episodes,
                             seed=episode_seed,
-                            logger=logger,
                         )
                         dqn_records.append(record)
 
@@ -800,7 +864,9 @@ def main() -> None:
 
             records_by_agent = {name: aggregated[name]["records"] for name in selected_agents}
             plot_step_plots(records_by_agent, plot_path)
-            if selected_agents != all_agents:
+            # Only re-print summaries if the requested agents form a true subset of the
+            # available ones, not just a different ordering of the same set.
+            if set(selected_agents) != set(all_agents):
                 print_agent_summaries(aggregated, selected_agents)
             print(f"[INFO] Aggregated results saved to {output_dir / AGGREGATED_FILENAME}")
             print(f"[PLOT] Saved comparison to {plot_path}")

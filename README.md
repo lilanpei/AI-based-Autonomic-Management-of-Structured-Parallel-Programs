@@ -124,7 +124,7 @@ faas-cli up -f stack.yaml
 ### **2. Test Baseline Policies**
 
 ```bash
-cd autoscaling_env
+cd autoscaling_env/baselines
 python test_reactive_baselines.py --agent both --steps 50 --step-duration 10 --horizon 10
 ```
 
@@ -171,8 +171,8 @@ and JSON summaries with the same aggregate metrics as the comparison tooling
 ### **6. Plot Single-Episode Comparison (SARSA, DQN & Baselines)**
 
 ```bash
-cd autoscaling_env/rl
-python compare_policies.py \
+cd autoscaling_env
+python -m compare_policies \
   --model rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
   --dqn-model rl/runs/dqn_run_<timestamp>/models/dqn_final.pt \
   --initial-workers 12 \
@@ -239,14 +239,12 @@ new simulations using `--plot-only --input-dir <existing_run> [--agents ...]`.
 
 ## 📊 Performance Comparison
 
-| Method          | QoS Rate | Avg Workers | Training Time | Complexity |
-|-----------------|----------|-------------|---------------|------------|
-| **DQN**         |          |             |               | Medium     |
-| **SARSA**       |          |             |               | Medium     |
-| ReactiveAverage |          |             | 0 (no train)  | Low        |
-| ReactiveMaximum |          |             | 0 (no train)  | Low        |
-
-**Expected:SARSA achieves better QoS than baselines through learning!**
+| Method          |  QoS Rate [%] | Mean Workers |  Max Workers | Scaling Actions| No-op Actions|
+|-----------------|---------------|--------------|--------------|----------------|--------------|
+| **SARSA**       | 99.20 ± 0.52  | 14.78 ± 0.49 | 17.80 ± 0.75 |  24.00 ± 2.05  | 4.90  ± 1.92 |
+| **DQN**         | 94.91 ± 3.79  | 14.40 ± 0.77 | 15.60 ± 1.02 |   3.60 ± 1.02  | 24.60 ± 1.69 |
+| ReactiveAverage | 50.87 ± 4.38  | 10.79 ± 0.31 | 16.60 ± 0.66 |  28.40 ± 0.92  | 1.00  ± 1.00 |
+| ReactiveMaximum | 65.61 ± 14.26 | 13.92 ± 0.68 | 18.80 ± 0.40 |  26.80 ± 1.25  | 1.70  ± 0.78 |
 
 ---
 

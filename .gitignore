@@ -9,7 +9,7 @@ autoscaling_env/rl/runs/
 autoscaling_env/baselines/plots/
 autoscaling_env/baselines/logs/
 autoscaling_env/runs/
-orchestrator/logs_farm
+logs_farm/
 docs/
 # Ignore everything in the template directory
 openfaas-functions/template/*

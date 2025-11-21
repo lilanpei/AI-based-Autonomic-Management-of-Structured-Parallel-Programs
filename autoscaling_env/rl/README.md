@@ -83,7 +83,7 @@ Key arguments:
 Each run directory includes:
 
 ```
-<runs>/sarsa_run_<timestamp>/
+runs/sarsa_run_<timestamp>/
   logs/training.log          # Structured log output
   models/sarsa_final.pkl     # Final SARSA agent (pickle)
   models/sarsa_epXXXX.pkl    # Optional checkpoints
@@ -128,16 +128,17 @@ Episode artefacts mirror SARSA but live under `runs/dqn_run_<timestamp>/` with `
 ## Evaluating Saved Models
 
 ```bash
-python -m autoscaling_env.rl.test_sarsa \
-  --model autoscaling_env/rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
+cd autoscaling_env/rl
+python -m test_sarsa \
+  --model runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
   --episodes 5 \
   --max-steps 30 \
   --step-duration 8 \
   --observation-window 8 \
   --initial-workers 12 \
 
-python -m autoscaling_env.rl.test_dqn \
-  --model autoscaling_env/rl/runs/dqn_run_<timestamp>/models/dqn_final.pt \
+python -m test_dqn \
+  --model runs/dqn_run_<timestamp>/models/dqn_final.pt \
   --episodes 5 \
   --max-steps 30 \
   --step-duration 8 \
@@ -151,9 +152,10 @@ Both scripts execute greedy roll-outs (SARSA via Q-table lookup, DQN via the neu
 ### Compare Against Reactive Baselines on a Single Episode
 
 ```bash
-python -m autoscaling_env.compare_policies \
-  --model autoscaling_env/rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
-  --dqn-model autoscaling_env/rl/runs/dqn_run_<timestamp>/models/dqn_final.pt \
+cd autoscaling_env
+python compare_policies.py \
+  --model rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
+  --dqn-model rl/runs/dqn_run_<timestamp>/models/dqn_final.pt \
   --max-steps 30 \
   --initial-workers 12 \
   --agents sarsa dqn reactiveaverage reactivemaximum
@@ -165,14 +167,15 @@ and shared plots for the selected policies. Once `aggregated_results.json` exist
 plots or focus on a subset of policies without rerunning simulations:
 
 ```bash
-python -m autoscaling_env.compare_policies \
+cd autoscaling_env
+python compare_policies.py \
   --plot-only \
-  --input-dir autoscaling_env/runs/comparison/compare_<timestamp> \
+  --input-dir runs/comparison/compare_<timestamp> \
   --agents reactiveaverage
 ```
 
 > **Baseline cache:** reuse previously simulated reactive policies while re-evaluating SARSA/DQN by passing
-> `--baseline-cache autoscaling_env/runs/comparison/compare_<timestamp>`.
+> `--baseline-cache runs/comparison/compare_<timestamp>`.
 
 ## Eligibility Traces
 
@@ -188,9 +191,10 @@ If you adjust plotting styles or regenerate charts after cleaning the `plots/`
 folder, use:
 
 ```bash
-python -m autoscaling_env.rl.plot_training \
-  autoscaling_env/rl/runs/sarsa_run_<timestamp>/training_metrics.json \
-  --output autoscaling_env/rl/runs/sarsa_run_<timestamp>/plots/training_curves.png
+cd autoscaling_env/rl
+python -m plot_training \
+  runs/sarsa_run_<timestamp>/training_metrics.json \
+  --output runs/sarsa_run_<timestamp>/plots/training_curves.png
 ```
 
 The plotter accepts either `training_metrics.json` or `logs/training.log` and

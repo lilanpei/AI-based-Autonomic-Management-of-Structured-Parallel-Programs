@@ -29,7 +29,7 @@ from autoscaling_env.rl.utils import (
     prepare_output_directory,
     write_json,
 )
-from utilities.utilities import get_utc_now
+from utilities.utilities import get_utc_now, get_config
 
 
 def parse_args() -> argparse.Namespace:
@@ -321,6 +321,13 @@ def main() -> None:
     logger = configure_logging(experiment_dir / "logs", name="dqn")
     logger.info("Experiment directory: %s", experiment_dir)
     logger.info("Training configuration: %s", " ".join(f"{k}={v}" for k, v in sorted(vars(args).items())))
+    try:
+        full_config = get_config()
+        reward_cfg = full_config.get("reward", {})
+    except Exception as exc:
+        logger.warning("Unable to load reward configuration: %s", exc)
+    else:
+        logger.info("Reward configuration: %s", reward_cfg)
 
     env = OpenFaaSAutoscalingEnv(
         max_steps=args.max_steps,
@@ -531,7 +538,7 @@ def main() -> None:
             metrics,
             eval_history,
             plots_dir / "training_curves.png",
-            title="DQN Training Progress",
+            title="DQN Training Curves",
         )
     except ValueError as exc:
         logger.warning("Skipping training plot generation: %s", exc)

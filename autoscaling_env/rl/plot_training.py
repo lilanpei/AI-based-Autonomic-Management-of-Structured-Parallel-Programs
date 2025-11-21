@@ -16,6 +16,12 @@ except ImportError:  # pragma: no cover - fallback when SciPy missing
     uniform_filter1d = None
 
 
+def write_json(data: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fp:
+        json.dump(data, fp, indent=2)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -39,6 +45,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def _normalize_episode(payload: dict[str, Any]) -> dict[str, Any]:
+    # Work on a shallow copy so we can safely normalise key names.
+    payload = dict(payload)
+
+    # Map legacy log keys to the canonical metric names used by training_metrics.json.
+    if "scale_up_count" not in payload and "scale_up" in payload:
+        payload["scale_up_count"] = payload["scale_up"]
+    if "scale_down_count" not in payload and "scale_down" in payload:
+        payload["scale_down_count"] = payload["scale_down"]
+    if "noop_count" not in payload and "noop" in payload:
+        payload["noop_count"] = payload["noop"]
+    if "processed_tasks" not in payload and "tasks" in payload:
+        payload["processed_tasks"] = payload["tasks"]
+
     try:
         episode_number = int(payload["episode"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -164,6 +183,145 @@ def _load_from_log(path: Path) -> list[dict[str, Any]]:
         raise ValueError("Log file does not contain parsable episode summaries")
 
     return episodes
+
+
+def _parse_eval_line(line: str) -> dict[str, Any] | None:
+    if "[EVAL]" not in line or "Episode " not in line or "|" not in line:
+        return None
+    try:
+        after_eval = line.split("[EVAL]", 1)[1]
+        after_episode = after_eval.split("Episode ", 1)[1]
+        episode_part, metrics_part = after_episode.split("|", 1)
+    except ValueError:
+        return None
+    episode_text = episode_part.strip().split()[0]
+    try:
+        episode = int(episode_text)
+    except ValueError:
+        return None
+    values: dict[str, Any] = {"episode": episode}
+    for token in metrics_part.strip().split():
+        if "=" not in token:
+            continue
+        key, raw_value = token.split("=", 1)
+        raw_value = raw_value.rstrip(",")
+        mean_str = raw_value
+        std_str: str | None = None
+        if "±" in raw_value:
+            mean_str, std_str = raw_value.split("±", 1)
+
+        def _strip_percent(text: str) -> str:
+            return text[:-1] if text.endswith("%") else text
+
+        mean_str = _strip_percent(mean_str)
+        try:
+            mean_val = float(mean_str)
+        except (TypeError, ValueError):
+            continue
+        values[key] = mean_val
+        if std_str is not None:
+            std_str = _strip_percent(std_str)
+            try:
+                std_val = float(std_str)
+            except (TypeError, ValueError):
+                continue
+            values[f"{key}_std"] = std_val
+    return values
+
+
+def _normalize_eval_from_values(values: dict[str, Any]) -> dict[str, Any] | None:
+    episode_raw = values.get("episode")
+    if episode_raw is None:
+        return None
+    try:
+        episode = int(episode_raw)
+    except (TypeError, ValueError):
+        return None
+    total_reward = values.get("total_reward", values.get("reward"))
+    final_qos = values.get("final_qos", values.get("qos"))
+    if total_reward is None or final_qos is None:
+        return None
+    try:
+        mean_total_reward = float(total_reward)
+    except (TypeError, ValueError):
+        return None
+    std_total_reward = 0.0
+    if "total_reward_std" in values:
+        try:
+            std_total_reward = float(values["total_reward_std"])
+        except (TypeError, ValueError):
+            std_total_reward = 0.0
+    try:
+        final_qos_percent = float(final_qos)
+    except (TypeError, ValueError):
+        return None
+    final_qos_std_percent = 0.0
+    if "final_qos_std" in values:
+        try:
+            final_qos_std_percent = float(values["final_qos_std"])
+        except (TypeError, ValueError):
+            final_qos_std_percent = 0.0
+    entry: dict[str, Any] = {
+        "episode": episode,
+        "mean_total_reward": mean_total_reward,
+        "std_total_reward": std_total_reward,
+        "mean_final_qos": final_qos_percent / 100.0,
+        "std_final_qos": final_qos_std_percent / 100.0,
+    }
+    scaling_mean = values.get("scaling")
+    if scaling_mean is not None:
+        try:
+            entry["mean_scaling_actions"] = float(scaling_mean)
+        except (TypeError, ValueError):
+            pass
+        scaling_std = values.get("scaling_std")
+        if scaling_std is not None:
+            try:
+                entry["std_scaling_actions"] = float(scaling_std)
+            except (TypeError, ValueError):
+                pass
+    max_workers_mean = values.get("max_workers", values.get("workers"))
+    if max_workers_mean is not None:
+        try:
+            entry["mean_max_workers"] = float(max_workers_mean)
+        except (TypeError, ValueError):
+            pass
+        max_workers_std = values.get("max_workers_std")
+        if max_workers_std is not None:
+            try:
+                entry["std_max_workers"] = float(max_workers_std)
+            except (TypeError, ValueError):
+                pass
+    mean_qos_percent = values.get("mean_qos")
+    if mean_qos_percent is not None:
+        try:
+            entry["mean_mean_qos"] = float(mean_qos_percent) / 100.0
+        except (TypeError, ValueError):
+            pass
+        mean_qos_std = values.get("mean_qos_std")
+        if mean_qos_std is not None:
+            try:
+                entry["std_mean_qos"] = float(mean_qos_std) / 100.0
+            except (TypeError, ValueError):
+                pass
+    return entry
+
+
+def _build_evaluations_from_log(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    evaluations: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            parsed = _parse_eval_line(line)
+            if parsed is None:
+                continue
+            entry = _normalize_eval_from_values(parsed)
+            if entry is None:
+                continue
+            evaluations.append(entry)
+    evaluations.sort(key=lambda entry: int(entry.get("episode", 0)))
+    return evaluations
 
 
 def load_episodes(path: Path) -> list[dict[str, Any]]:
@@ -342,14 +500,26 @@ def render_training_curves(
     scaling_smooth = _smooth(scaling_events, smooth_window) if smooth_window else scaling_events
     workers_smooth = _smooth(max_workers, smooth_window) if smooth_window else max_workers
 
+    plt.rcParams.update(
+        {
+            "font.size": 14,
+            "axes.titlesize": 18,
+            "axes.labelsize": 14,
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12,
+            "legend.fontsize": 12,
+            "figure.titlesize": 20,
+        }
+    )
+
     fig, (ax_reward, ax_qos, ax_workers, ax_scaling) = plt.subplots(
         4,
         1,
         sharex=True,
-        figsize=(12, 14),
+        figsize=(16, 14),
         constrained_layout=False,
     )
-    fig.suptitle(title)
+    fig.suptitle(title, fontsize=20)
 
     # Reward subplot
     ax_reward.set_ylabel("Total Reward", color="tab:blue")
@@ -366,7 +536,9 @@ def render_training_curves(
         rewards_smooth,
         color="tab:blue",
         linewidth=2,
-        label="Total Reward (smoothed)",
+        label=(
+            f"Total Reward (moving avg {smooth_window})" if smooth_window else "Total Reward (moving avg)"
+        ),
     )
     ax_reward.tick_params(axis="y", labelcolor="tab:blue")
     ax_reward.grid(True, alpha=0.3)
@@ -388,7 +560,9 @@ def render_training_curves(
         color="tab:green",
         linestyle="--",
         linewidth=2,
-        label="Final QoS (smoothed)",
+        label=(
+            f"Final QoS (moving avg {smooth_window})" if smooth_window else "Final QoS (moving avg)"
+        ),
     )
     ax_qos.tick_params(axis="y", labelcolor="tab:green")
     ax_qos.grid(True, alpha=0.3)
@@ -609,7 +783,7 @@ def render_training_curves(
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return output_path
 
@@ -617,37 +791,101 @@ def render_training_curves(
 def main() -> None:
     args = parse_args()
 
-    if not args.metrics.exists():
-        raise FileNotFoundError(f"Metrics file not found: {args.metrics}")
+    metrics_arg = args.metrics
+    if metrics_arg.is_dir():
+        run_dir = metrics_arg
+        metrics_path = run_dir / "training_metrics.json"
+    else:
+        metrics_path = metrics_arg
+        run_dir = metrics_path.parent
+    log_path = run_dir / "logs" / "training.log"
 
-    episodes = load_episodes(args.metrics)
+    if metrics_path.exists():
+        episodes = load_episodes(metrics_path)
+    elif log_path.exists():
+        episodes = _load_from_log(log_path)
+        if not episodes:
+            raise ValueError(f"Log file does not contain parsable episode summaries: {log_path}")
+        write_json({"episodes": episodes}, metrics_path)
+    else:
+        raise FileNotFoundError(
+            f"Metrics file not found: {metrics_path} and log file not found: {log_path}"
+        )
 
     if not episodes:
         raise ValueError("Metrics file does not contain any episode data")
 
+    # For older runs, training_metrics.json may lack explicit scaling counts.
+    # If so, try to enrich the loaded episodes with scaling information parsed from the log.
+    has_scaling = any(
+        ("scale_up_count" in ep and ep["scale_up_count"] is not None)
+        or ("scale_down_count" in ep and ep["scale_down_count"] is not None)
+        for ep in episodes
+    )
+
+    if not has_scaling and log_path.exists():
+        try:
+            log_episodes = _load_from_log(log_path)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] Unable to enrich metrics with scaling info from {log_path}: {exc}")
+        else:
+            by_episode = {ep.get("episode"): ep for ep in log_episodes if "episode" in ep}
+            for ep in episodes:
+                ep_id = ep.get("episode")
+                src = by_episode.get(ep_id)
+                if not src:
+                    continue
+                for key in (
+                    "scale_up_count",
+                    "scale_down_count",
+                    "noop_count",
+                    "max_workers",
+                    "mean_workers",
+                ):
+                    if key not in ep and key in src:
+                        ep[key] = src[key]
+
     eval_path = args.evaluation
-    if eval_path is None:
-        candidate = args.metrics.parent / "evaluation_metrics.json"
-        if candidate.exists():
-            eval_path = candidate
+    default_eval_path = run_dir / "evaluation_metrics.json"
 
     evaluation_entries: list[dict[str, Any]] = []
-    if eval_path is not None:
-        if not eval_path.exists():
-            print(f"[WARN] Evaluation metrics file not found: {eval_path}")
+
+    if eval_path is None and default_eval_path.exists():
+        eval_path = default_eval_path
+
+    if eval_path is not None and eval_path.exists():
+        try:
+            evaluation_entries = load_evaluation(eval_path)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] Unable to load evaluation metrics from {eval_path}: {exc}")
+    elif log_path.exists():
+        try:
+            evaluation_entries = _build_evaluations_from_log(log_path)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] Unable to parse evaluation entries from log {log_path}: {exc}")
         else:
-            try:
-                evaluation_entries = load_evaluation(eval_path)
-            except Exception as exc:  # noqa: BLE001
-                print(f"[WARN] Unable to load evaluation metrics from {eval_path}: {exc}")
+            if evaluation_entries:
+                target_eval_path = eval_path or default_eval_path
+                write_json({"checkpoints": evaluation_entries}, target_eval_path)
+            elif eval_path is not None:
+                print(f"[WARN] Evaluation metrics file not found: {eval_path}")
 
     if args.output:
         output_path = args.output
     else:
-        output_path = args.metrics.parent / "plots" / "training_curves.png"
+        output_path = run_dir / "plots" / "training_curves.png"
         output_path.parent.mkdir(exist_ok=True)
 
-    render_training_curves(episodes, evaluation_entries, output_path)
+    # Infer a sensible title from the run directory name when possible.
+    run_name = run_dir.name.lower()
+    if run_name.startswith("sarsa_run") or "sarsa" in run_name:
+        title = "SARSA Training Curves"
+    elif run_name.startswith("dqn_run") or "dqn" in run_name:
+        title = "DQN Training Curves"
+    else:
+        title = "Training Curves"
+
+    render_training_curves(episodes, evaluation_entries, output_path, title=title)
     print(f"Plot saved to {output_path}")
 
 

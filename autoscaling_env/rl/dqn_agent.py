@@ -157,7 +157,7 @@ class DQNAgent:
     ) -> None:
         state_norm = self._normalize(state)
         next_state_norm = self._normalize(next_state)
-        clipped_reward = float(np.clip(reward, -50.0, 50.0))
+        clipped_reward = float(np.clip(reward, -100.0, 100.0))
         self.replay_buffer.push(Transition(state_norm, action, clipped_reward, next_state_norm, done))
 
     def decay_epsilon(self) -> None:

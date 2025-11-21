@@ -52,7 +52,7 @@ Terminal shaping draws from `reward.unfinished_penalty_scale` (negative when wor
 
 ```bash
 # 1. Explore reactive baselines
-cd autoscaling_env
+cd autoscaling_env/baselines
 python test_reactive_baselines.py --agent both --steps 30 --step-duration 8 --horizon 8
 
 # 2. Train SARSA (100 episodes × 30 steps)
@@ -71,12 +71,15 @@ python test_dqn.py --model runs/dqn_run_<timestamp>/models/dqn_final.pt --initia
 
 # 5. Compare SARSA vs reactive policies
 python compare_policies.py --model rl/runs/sarsa_run_<timestamp>/models/sarsa_final.pkl \
-    --initial-workers 12 --max-steps 30 --agents agent reactiveaverage reactivemaximum
+    --initial-workers 12 --max-steps 30 --agents sarsa reactiveaverage reactivemaximum
 ```
 
 Each trainer creates timestamped run directories (e.g., `sarsa_run_*`, `dqn_run_*`) with per-step logs,
 metrics (reward, QoS, **mean/max workers, processed tasks, QoS violations, unfinished tasks**), checkpoints,
-and plots. Evaluation scripts mirror the SARSA-style tabular reporting and per-episode figures. Outputs live under `autoscaling_env/runs/`.
+and plots. Evaluation scripts mirror the SARSA-style tabular reporting and per-episode figures.
+
+- RL training runs are written under `autoscaling_env/rl/runs/` when invoked from the `rl/` directory.
+- Policy comparison runs are written under `autoscaling_env/runs/comparison/` when using `compare_policies.py`.
 
 ---
 

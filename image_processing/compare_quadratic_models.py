@@ -127,10 +127,22 @@ def plot_comparison(
     reduced_preds_ms = metrics["reduced"]["preds"] * 1000.0
     full_preds_ms = metrics["full"]["preds"] * 1000.0
 
+    plt.rcParams.update(
+        {
+            "font.size": 14,
+            "axes.titlesize": 18,
+            "axes.labelsize": 14,
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12,
+            "legend.fontsize": 12,
+            "figure.titlesize": 20,
+        }
+    )
+
     fig, (ax_curve, ax_resid) = plt.subplots(
         2,
         1,
-        figsize=(11, 8),
+        figsize=(10, 6),
         sharex=True,
         gridspec_kw={"height_ratios": [3, 1], "hspace": 0.08},
     )
@@ -189,41 +201,41 @@ def plot_comparison(
     reduced = metrics["reduced"]
     full = metrics["full"]
     delta_rss = reduced["rss"] - full["rss"]
-    summary_lines = [
-        "Fit quality:",
-        "  Reduced → R² = {:.6f}, RSS = {:.3e}".format(reduced["r2"], reduced["rss"]),
-        "  Full     → R² = {:.6f}, RSS = {:.3e}".format(full["r2"], full["rss"]),
-        "  ΔRSS (reduced − full) = {:.3e}".format(delta_rss),
-    ]
-    ax_curve.annotate(
-        "\n".join(summary_lines),
-        xy=(0.6, 0.28),
-        xycoords="axes fraction",
-        fontsize=10,
-        ha="left",
-        va="top",
-        bbox=dict(boxstyle="round,pad=0.4", facecolor="#ffffff", alpha=0.92, edgecolor="#cccccc"),
-    )
+    # summary_lines = [
+    #     "Fit quality:",
+    #     "  Reduced → R² = {:.6f}, RSS = {:.3e}".format(reduced["r2"], reduced["rss"]),
+    #     "  Full     → R² = {:.6f}, RSS = {:.3e}".format(full["r2"], full["rss"]),
+    #     "  ΔRSS (reduced − full) = {:.3e}".format(delta_rss),
+    # ]
+    # ax_curve.annotate(
+    #     "\n".join(summary_lines),
+    #     xy=(0.6, 0.28),
+    #     xycoords="axes fraction",
+    #     fontsize=10,
+    #     ha="left",
+    #     va="top",
+    #     bbox=dict(boxstyle="round,pad=0.4", facecolor="#ffffff", alpha=0.92, edgecolor="#cccccc"),
+    # )
 
     reduced_a, reduced_b = reduced["params"]
     full_a, full_b, full_c = full["params"]
-    formula_lines = [
-        "Model formulas:",
-        f"  Reduced: t(x) = {reduced_a:.3e}·x² + {reduced_b:.3e}",
-        f"  Full:     t(x) = {full_a:.3e}·x² + {full_b:.3e}·x + {full_c:.3e}",
-    ]
-    ax_curve.annotate(
-        "\n".join(formula_lines),
-        xy=(0.05, 0.55),
-        xycoords="axes fraction",
-        fontsize=10,
-        ha="left",
-        va="center",
-        bbox=dict(boxstyle="round,pad=0.4", facecolor="#ffffff", alpha=0.92, edgecolor="#cccccc"),
-    )
+    # formula_lines = [
+    #     "Model formulas:",
+    #     f"  Reduced: t(x) = {reduced_a:.3e}·x² + {reduced_b:.3e}",
+    #     f"  Full:     t(x) = {full_a:.3e}·x² + {full_b:.3e}·x + {full_c:.3e}",
+    # ]
+    # ax_curve.annotate(
+    #     "\n".join(formula_lines),
+    #     xy=(0.05, 0.55),
+    #     xycoords="axes fraction",
+    #     fontsize=10,
+    #     ha="left",
+    #     va="center",
+    #     bbox=dict(boxstyle="round,pad=0.4", facecolor="#ffffff", alpha=0.92, edgecolor="#cccccc"),
+    # )
 
     fig.align_labels()
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"\nPlot saved to {output_path}")
 

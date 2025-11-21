@@ -101,13 +101,14 @@ Policies map the worker delta to the 3-action space used by the environment:
 ### **Test Single Policy**
 
 ```bash
-cd autoscaling_env
+cd autoscaling_env/baselines
 python test_reactive_baselines.py --agent average --steps 30
 ```
 
 ### **Test Both Policies**
 
 ```bash
+cd autoscaling_env/baselines
 python test_reactive_baselines.py --agent both --steps 30 --step-duration 8 --horizon 8
 ```
 
